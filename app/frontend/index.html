@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Finishline Dashboard</title>
+    <link rel="stylesheet" href="/src/style.css">
 </head>
 <body>
 <header>
@@ -31,9 +32,44 @@
         <!-- Calibration -->
         <details id="calibration-section">
             <summary>Calibration</summary>
-            <textarea id="calibration-json" cols="60" rows="8" spellcheck="false"></textarea>
-            <div class="row">
-                <button id="save-calibration">Save Calibration</button>
+
+            <!-- Drawing toolbar -->
+            <div class="row calib-toolbar">
+                <button id="calib-btn-line" class="calib-tool-btn" title="Drag to draw the finish line">&#9998; Finish Line</button>
+                <button id="calib-btn-roi"  class="calib-tool-btn" title="Click to add vertices, double-click to close">&#9651; ROI Polygon</button>
+                <button id="calib-btn-reading" class="calib-tool-btn" title="Optional bib reading zone">&#9633; Reading Zone</button>
+                <button id="calib-btn-clear" class="btn-danger btn-sm">&#128465; Clear All</button>
+                <button id="calib-btn-autodetect" title="Auto-detect finish line from first video frame">&#9889; Auto-Detect</button>
+                <span class="muted-label" id="calib-hint">Choose a tool and draw on the frame</span>
+            </div>
+
+            <!-- Canvas frame: test video first-frame -->
+            <div id="calib-canvas-wrap">
+                <canvas id="calib-canvas"></canvas>
+                <div id="calib-placeholder">&#128247; Loading frame&hellip;</div>
+            </div>
+
+            <!-- Raw JSON (collapsible for power users) -->
+            <details id="calib-json-details" style="margin-top:10px;">
+                <summary style="font-size:0.85rem;color:#666;">Raw JSON</summary>
+                <div class="calib-legend">
+                    <div class="calib-legend-item"><span class="calib-dot" style="background:#f0c04a"></span><div><strong>finish_line</strong> &mdash; two points [[x1,y1],[x2,y2]] across the frame.</div></div>
+                    <div class="calib-legend-item"><span class="calib-dot" style="background:#2ecc71"></span><div><strong>roi_polygon</strong> &mdash; polygon (&ge;3 pts) around the track corridor. Defaults to full frame.</div></div>
+                    <div class="calib-legend-item"><span class="calib-dot" style="background:#3498db"></span><div><strong>reading_zone</strong> &mdash; optional polygon where bib numbers appear. Leave <code>null</code> to use the whole crop.</div></div>
+                </div>
+                <textarea id="calibration-json" cols="60" rows="7" spellcheck="false"></textarea>
+            </details>
+
+            <div class="row" style="margin-top:10px;">
+                <select id="calib-resolution">
+                    <option value="640x480">640 &times; 480</option>
+                    <option value="1280x720" selected>1280 &times; 720 (HD)</option>
+                    <option value="1920x1080">1920 &times; 1080 (Full HD)</option>
+                    <option value="3840x2160">3840 &times; 2160 (4K)</option>
+                </select>
+                <button id="load-calib-defaults">&#8635; Load Defaults</button>
+                <button id="calib-from-json">&#8593; Load JSON</button>
+                <button id="save-calibration">&#10003; Save Calibration</button>
             </div>
         </details>
 

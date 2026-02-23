@@ -399,6 +399,7 @@
     <strong id="motion-val" style="font-family:var(--mono);font-size:.75rem;min-width:28px">0</strong>
   </span>
   <span id="ocr-status" style="color:var(--accent)"></span>
+  <span id="live-bib" style="font-family:var(--mono);font-weight:700;font-size:.85rem;color:var(--accent2);letter-spacing:.04em"></span>
 </div>
 
 <!-- Hidden video element -->
@@ -434,6 +435,9 @@ const state = {
   bikeFilter: true,        // only fire if a bike/person is on the line
   lastDetections: [],      // most recent YOLOv8 predictions
   detLoopId: null,         // setInterval handle for background inference
+  // ── Best-frame burst capture ────────────────────────────────
+  frameBuffer: [],         // rolling buffer of last N pre-crossing crops
+  burstSession: null,      // active burst: {entryId,rank,ts,frames,endsAt}
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────
@@ -496,7 +500,7 @@ const YOLO_MODEL_URL = 'yolov8n.onnx';  // served from the same directory as thi
 
 // ── YOLOv8 inference helpers ──────────────────────────────────────
 const YOLO_SIZE   = 640;
-const CONF_THRESH = 0.30;
+const CONF_THRESH = 0.25;
 const NMS_THRESH  = 0.45;
 // Only care about persons (0) and bicycles (1) from the 80 COCO classes
 const YOLO_CLASSES = { 0: 'person', 1: 'bicycle' };
@@ -504,18 +508,22 @@ const YOLO_CLASSES = { 0: 'person', 1: 'bicycle' };
 async function runYolo() {
   if (!state.modelReady || !state.ortSession) return [];
 
-  // ── Letterbox: resize canvas into 640×640 with grey padding ──
+  // ── Letterbox: resize the *video* element into 640×640 with grey padding ──
+  // Read from video directly (not the display canvas) so the FINISH overlay
+  // and detection boxes don't contaminate the model input.
+  const srcW = video.videoWidth  || canvas.width;
+  const srcH = video.videoHeight || canvas.height;
   const off = document.createElement('canvas');
   off.width = off.height = YOLO_SIZE;
   const offCtx = off.getContext('2d');
-  const scale  = Math.min(YOLO_SIZE / canvas.width, YOLO_SIZE / canvas.height);
-  const dw     = Math.round((YOLO_SIZE - canvas.width  * scale) / 2);
-  const dh     = Math.round((YOLO_SIZE - canvas.height * scale) / 2);
-  const dW     = Math.round(canvas.width  * scale);
-  const dH     = Math.round(canvas.height * scale);
+  const scale  = Math.min(YOLO_SIZE / srcW, YOLO_SIZE / srcH);
+  const dw     = Math.round((YOLO_SIZE - srcW * scale) / 2);
+  const dh     = Math.round((YOLO_SIZE - srcH * scale) / 2);
+  const dW     = Math.round(srcW * scale);
+  const dH     = Math.round(srcH * scale);
   offCtx.fillStyle = 'rgb(114,114,114)';
   offCtx.fillRect(0, 0, YOLO_SIZE, YOLO_SIZE);
-  offCtx.drawImage(canvas, dw, dh, dW, dH);
+  offCtx.drawImage(video, dw, dh, dW, dH);
 
   // ── Build [1, 3, 640, 640] NCHW float32 tensor (RGB, /255) ───
   const px  = offCtx.getImageData(0, 0, YOLO_SIZE, YOLO_SIZE).data;
@@ -543,11 +551,15 @@ async function runYolo() {
     if (bestCls === -1) continue;
 
     // cx,cy,w,h in letterbox pixel space → undo padding+scale → canvas px
+    // Note: inference used native video dims (srcW×srcH), so we scale to canvas.
     const cx_lb = raw[0 * N + i], cy_lb = raw[1 * N + i];
     const w_lb  = raw[2 * N + i], h_lb  = raw[3 * N + i];
-    const x1 = (cx_lb - w_lb / 2 - dw) / scale;
-    const y1 = (cy_lb - h_lb / 2 - dh) / scale;
-    const bw  = w_lb / scale, bh = h_lb / scale;
+    // First convert to native-video px, then to canvas px
+    const vidScale = canvas.width / srcW;
+    const x1 = ((cx_lb - w_lb / 2 - dw) / scale) * vidScale;
+    const y1 = ((cy_lb - h_lb / 2 - dh) / scale) * vidScale;
+    const bw  = (w_lb / scale) * vidScale;
+    const bh  = (h_lb / scale) * vidScale;
     const cx1 = Math.max(0, x1);
     const cy1 = Math.max(0, y1);
     const cw  = Math.min(canvas.width  - cx1, bw);
@@ -680,16 +692,28 @@ document.getElementById('btn-start').addEventListener('click', () => {
   document.getElementById('btn-stop').disabled = false;
   setStatus('running');
   video.play();
-  // Background inference loop — runs YOLOv8n ~2fps independently of frame loop
+  // Background inference loop — YOLO + live OCR, ~2fps.
   state.lastDetections = [];
-  if (state.modelReady) {
-    state.detLoopId = setInterval(async () => {
-      if (!state.isRunning || !state.ortSession) return;
+  state.detLoopId = setInterval(async () => {
+    if (!state.isRunning) return;
+    // ── YOLO ────────────────────────────────────────────────────
+    if (state.ortSession && state.modelReady) {
+      try { state.lastDetections = await runYolo(); }
+      catch (e) { console.warn('[YOLO] inference error:', e); }
+    }
+    // ── Live OCR: scan finish zone and display any bib found ───
+    if (state.finishLine && state.ocrReady && state.ocrWorker && !state.burstSession) {
       try {
-        state.lastDetections = await runYolo();
+        const bib = await liveOcrScan(state.finishLine);
+        const el  = document.getElementById('live-bib');
+        if (bib) {
+          el.textContent = `👁 ${bib}`;
+          clearTimeout(el._hideTimer);
+          el._hideTimer = setTimeout(() => { el.textContent = ''; }, 1800);
+        }
       } catch (_) {}
-    }, 500);
-  }
+    }
+  }, 500);
   scheduleFrame();
 });
 
@@ -705,6 +729,8 @@ function stopProcessing() {
   video.pause();
   if (state.detLoopId) { clearInterval(state.detLoopId); state.detLoopId = null; }
   state.lastDetections = [];
+  state.frameBuffer   = [];
+  state.burstSession  = null;
   document.getElementById('btn-start').disabled = false;
   document.getElementById('btn-stop').disabled = true;
   setStatus('stopped');
@@ -733,6 +759,24 @@ function onVideoFrame() {
   state.frameCount++;
   frameCount.textContent = state.frameCount;
   drawOverlay();
+
+  // ── Maintain rolling pre-crossing crop buffer ─────────────────
+  if (state.finishLine) {
+    const crop = captureFinishCrop(state.finishLine);
+    state.frameBuffer.push(crop);
+    if (state.frameBuffer.length > BURST_PRE_FRAMES) state.frameBuffer.shift();
+
+    // If a burst is active, collect post-crossing frames too
+    if (state.burstSession) {
+      state.burstSession.frames.push(crop);
+      if (performance.now() >= state.burstSession.endsAt) {
+        const burst = state.burstSession;
+        state.burstSession = null;
+        processBurst(burst);   // async, no await — updates log entry when done
+      }
+    }
+  }
+
   if (state.finishLine) checkCrossing();
   scheduleFrame();
 }
@@ -807,13 +851,13 @@ function lineCrossesBox(line, bbox) {
   return false;
 }
 
-// Returns the first detection (bicycle or person) that straddles the finish line,
-// or null if none do. Minimum confidence: 40%.
+// Returns the first BICYCLE detection straddling the finish line, or null.
+// Persons alone are intentionally excluded — spectators/officials walking near the
+// line should not trigger a crossing. Minimum confidence: 35%.
 function bikeOnLine(line, detections) {
-  const CLASSES = new Set(['bicycle', 'person']);
   for (const d of detections) {
-    if (!CLASSES.has(d.class)) continue;
-    if (d.score < 0.40) continue;
+    if (d.class !== 'bicycle') continue;
+    if (d.score < 0.35) continue;
     if (lineCrossesBox(line, d.bbox)) return d;
   }
   return null;
@@ -845,11 +889,164 @@ function checkCrossing() {
       state.detectCount++;
       detectCount.textContent = state.detectCount;
       triggerFlash();
-      captureAndOcr(line);
+      startBurst(line);    // capture burst, score sharpness, pick best OCR
     }
   }
 
   state.prevBand = band;
+}
+
+// ── Live OCR: runs in the background loop, shows instantaneous bib reads ────
+async function liveOcrScan(line) {
+  const { nrx, nry, nrw, nrh } = finishCropRect(line);
+  const pc = document.createElement('canvas');
+  pc.width = nrw; pc.height = nrh;
+  const pCtx = pc.getContext('2d');
+  pCtx.filter = 'grayscale(1) contrast(2.5) brightness(1.1)';
+  pCtx.drawImage(video, nrx, nry, nrw, nrh, 0, 0, nrw, nrh);
+  const blob = await new Promise(res => pc.toBlob(res, 'image/png'));
+  const { data } = await state.ocrWorker.recognize(blob);
+  const raw = data.text.trim();
+  const matches = raw.match(/\d+/g) || [];
+  // Only surface 2–4 digit results (typical BMX bib range)
+  return matches.filter(m => m.length >= 2 && m.length <= 4)
+                .sort((a, b) => b.length - a.length)[0] ?? null;
+}
+
+// ── Best-frame burst capture ──────────────────────────────────────
+// Pre-crossing rolling buffer length (frames)
+const BURST_PRE_FRAMES = 6;
+// How long (ms) to keep collecting post-crossing frames
+const BURST_POST_MS    = 600;
+
+// Compute crop rect (native video px) centred on the finish line.
+// Returns { nrx, nry, nrw, nrh }.
+function finishCropRect(line) {
+  const scaleX = video.videoWidth  / canvas.width;
+  const scaleY = video.videoHeight / canvas.height;
+  const cx = (line.x1 + line.x2) / 2;
+  const cy = (line.y1 + line.y2) / 2;
+  const halfW = Math.max(200, Math.abs(line.x2 - line.x1) / 2 + 160);
+  const halfH = Math.max(130, Math.abs(line.y2 - line.y1) / 2 + 130);
+  const rx  = Math.max(0, Math.round(cx - halfW));
+  const ry  = Math.max(0, Math.round(cy - halfH));
+  const rw  = Math.min(canvas.width  - rx, Math.round(halfW * 2));
+  const rh  = Math.min(canvas.height - ry, Math.round(halfH * 2));
+  return {
+    nrx: Math.round(rx * scaleX),
+    nry: Math.round(ry * scaleY),
+    nrw: Math.min(video.videoWidth  - Math.round(rx * scaleX), Math.round(rw * scaleX)),
+    nrh: Math.min(video.videoHeight - Math.round(ry * scaleY), Math.round(rh * scaleY)),
+  };
+}
+
+// Capture the current video frame cropped to the finish-line region.
+// Returns { cropCanvas, sharpness, videoTime } — toDataURL is deferred to burst
+// processing time so we don't pay the JPEG encode cost on every video frame.
+function captureFinishCrop(line) {
+  const { nrx, nry, nrw, nrh } = finishCropRect(line);
+  const c = document.createElement('canvas');
+  c.width = nrw; c.height = nrh;
+  c.getContext('2d').drawImage(video, nrx, nry, nrw, nrh, 0, 0, nrw, nrh);
+  return { cropCanvas: c, sharpness: frameSharpness(c), videoTime: video.currentTime };
+}
+
+// Laplacian-variance sharpness score on a downsampled greyscale version.
+// Higher = sharper. Fast enough to run every video frame.
+function frameSharpness(srcCanvas) {
+  const SCALE = 0.3;
+  const sw = Math.max(4, Math.round(srcCanvas.width  * SCALE));
+  const sh = Math.max(4, Math.round(srcCanvas.height * SCALE));
+  const tmp = document.createElement('canvas');
+  tmp.width = sw; tmp.height = sh;
+  const tc = tmp.getContext('2d');
+  tc.filter = 'grayscale(1)';
+  tc.drawImage(srcCanvas, 0, 0, sw, sh);
+  const d = tc.getImageData(0, 0, sw, sh).data;
+  let sum = 0, sum2 = 0, n = 0;
+  for (let y = 1; y < sh - 1; y++) {
+    for (let x = 1; x < sw - 1; x++) {
+      const i  = (y * sw + x) * 4;
+      const lap = Math.abs(
+        4 * d[i] - d[(y * sw + x - 1) * 4] - d[(y * sw + x + 1) * 4]
+                 - d[((y-1)*sw + x) * 4]    - d[((y+1)*sw + x) * 4]
+      );
+      sum  += lap;
+      sum2 += lap * lap;
+      n++;
+    }
+  }
+  const mean = sum / n;
+  return sum2 / n - mean * mean;   // variance of Laplacian
+}
+
+// Start a burst for one detected crossing.
+function startBurst(line) {
+  const rank = state.detectCount;
+  const ts   = formatTimestamp(video.currentTime);
+  // Seed with pre-crossing frames already in the rolling buffer
+  const frames = [...state.frameBuffer];
+  // Show the best pre-crossing frame as a provisional thumbnail (encode lazily)
+  const bestPre = frames.length
+    ? frames.slice().sort((a, b) => b.sharpness - a.sharpness)[0]
+    : null;
+  const thumbUrl = bestPre ? bestPre.cropCanvas.toDataURL('image/jpeg', 0.92) : null;
+  const entryId = addLogEntry(rank, ts, thumbUrl, null, 0, true);
+  state.burstSession = { entryId, rank, ts, frames, endsAt: performance.now() + BURST_POST_MS };
+}
+
+// Score a single OCR result for bib plausibility.
+// Prefers 2–4 digit results (typical BMX bib range) with high Tesseract confidence.
+function scoreOcrResult(r) {
+  if (!r.bib) return 0;
+  const d = r.bib.length;
+  const digitScore = (d >= 2 && d <= 4) ? 100 : (d === 1 ? 20 : 10);
+  return digitScore + (r.conf || 0);
+}
+
+// Run Tesseract on a single burst frame, return OCR result object.
+async function ocrFrame(frame) {
+  if (!state.ocrReady || !state.ocrWorker)
+    return { bib: null, conf: 0, raw: '', cropCanvas: frame.cropCanvas };
+  const src = frame.cropCanvas;
+  const pc  = document.createElement('canvas');
+  pc.width = src.width; pc.height = src.height;
+  const pCtx = pc.getContext('2d');
+  pCtx.filter = 'grayscale(1) contrast(2.2) brightness(1.1)';
+  pCtx.drawImage(src, 0, 0);
+  const blob = await new Promise(res => pc.toBlob(res, 'image/png'));
+  const { data } = await state.ocrWorker.recognize(blob);
+  const raw     = data.text.trim();
+  const matches = raw.match(/\d+/g) || [];
+  const bib     = matches.length ? matches.sort((a, b) => b.length - a.length)[0] : null;
+  return { bib, conf: Math.round(data.confidence), raw, cropCanvas: frame.cropCanvas };
+}
+
+// Process a completed burst: pick sharpest frames, run OCR, update log entry.
+async function processBurst(burst) {
+  const { entryId, frames } = burst;
+  if (!frames.length) { updateLogEntry(entryId, null, 0); return; }
+
+  // Sort all frames by sharpness — best first
+  const sorted = frames.slice().sort((a, b) => b.sharpness - a.sharpness);
+
+  // Update thumbnail immediately to sharpest frame found
+  updateLogThumb(entryId, sorted[0].dataUrl);
+
+  // Run OCR on the top 3 sharpest frames concurrently
+  ocrStatus.textContent = 'OCR: best frame…';
+  const top3 = sorted.slice(0, 3);
+  const results = await Promise.all(top3.map(f => ocrFrame(f)));
+
+  // Pick the result that contains the most plausible bib number
+  const best = results.reduce((a, b) => scoreOcrResult(b) > scoreOcrResult(a) ? b : a, results[0]);
+
+  updateLogThumb(entryId, best.cropCanvas.toDataURL('image/jpeg', 0.92));  // winner frame
+  updateLogEntry(entryId, best.bib ?? null, best.conf, best.raw?.replace(/\s+/g, ' ').slice(0, 40));
+
+  const allRaw = results.filter(r => r.raw).map(r => `"${r.raw.replace(/\s+/g,' ').slice(0,20)}"`).join(' | ');
+  console.debug(`[Burst #${burst.rank}] ${frames.length} frames, sharpness top=${sorted[0].sharpness.toFixed(0)} min=${sorted[sorted.length-1].sharpness.toFixed(0)}, OCR: ${allRaw}`);
+  ocrStatus.textContent = '';
 }
 
 // ── Capture + OCR ─────────────────────────────────────────────────
@@ -936,7 +1133,11 @@ function addLogEntry(rank, timestamp, thumbDataUrl, bib, conf, pending) {
 
   const img = document.createElement('img');
   img.className = 'log-thumb';
-  img.src = thumbDataUrl;
+  if (thumbDataUrl) {
+    img.src = thumbDataUrl;
+  } else {
+    img.style.background = 'var(--surface2)';   // grey placeholder until burst fills in
+  }
   img.alt = 'crossing';
   img.dataset.rank = rank;
   img.dataset.ts   = timestamp;
@@ -946,7 +1147,7 @@ function addLogEntry(rank, timestamp, thumbDataUrl, bib, conf, pending) {
   info.innerHTML = `
     <div class="log-rank">#${rank} &nbsp; ${timestamp}</div>
     <div class="log-bib ${pending ? 'processing' : bib ? '' : 'unknown'}" data-bib>
-      ${pending ? 'Reading OCR…' : (bib ?? '???')}
+      ${pending ? 'Selecting best frame…' : (bib ?? '???')}
     </div>
     <div class="log-conf" data-conf>${pending ? '' : `conf: ${conf}%`}</div>
   `;
@@ -974,6 +1175,14 @@ function updateLogEntry(id, bib, conf, rawText) {
       ? `conf: ${conf}%`
       : (rawText ? `raw: "${rawText.slice(0,30)}"` : 'no digits read');
   }
+}
+
+function updateLogThumb(id, dataUrl) {
+  if (!dataUrl) return;
+  const entry = logList.querySelector(`[data-entry-id="${id}"]`);
+  if (!entry) return;
+  const img = entry.querySelector('.log-thumb');
+  if (img) img.src = dataUrl;
 }
 
 document.getElementById('btn-clear-log').addEventListener('click', () => {

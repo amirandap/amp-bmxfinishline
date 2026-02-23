@@ -143,6 +143,73 @@ summary { font-weight: 600; cursor: pointer; user-select: none; }
 .toast-error { background: #d93025; }
 @keyframes fadein { from { opacity:0; transform: translateY(8px); } to { opacity:1; } }
 
+/* ── Calibration canvas editor ── */
+#calib-canvas-wrap {
+    position: relative;
+    width: 100%;
+    margin: 10px 0;
+    background: #1a1a2e;
+    border-radius: 8px;
+    overflow: hidden;
+    min-height: 80px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+#calib-canvas {
+    display: none;
+    max-width: 100%;
+    border-radius: 6px;
+    cursor: default;
+}
+#calib-placeholder {
+    color: #888;
+    font-size: 0.88rem;
+    padding: 24px;
+}
+.calib-toolbar { flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.calib-tool-btn {
+    background: #4a5568;
+}
+.calib-tool-btn:hover { background: #2d3748; }
+.calib-tool-btn.active {
+    background: #3a7bd5;
+    box-shadow: 0 0 0 2px #3a7bd580;
+}
+
+/* ── Calibration legend ── */
+.calib-legend {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: #f8f9fc;
+    border-radius: 6px;
+    border: 1px solid #e0e0e0;
+    font-size: 0.84rem;
+    line-height: 1.5;
+}
+.calib-legend-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+.calib-dot {
+    flex-shrink: 0;
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-top: 4px;
+}
+.calib-legend code {
+    background: #eee;
+    border-radius: 3px;
+    padding: 0 3px;
+    font-size: 0.82rem;
+}
+
 /* ── File upload row ── */
 .file-btn {
     display: inline-block;

@@ -46,6 +46,35 @@ class CalibrationOut(BaseModel):
     reading_zone: Optional[List[List[float]]] = None
 
 
+class AutoDetectIn(BaseModel):
+    """Request body for the POST /calibration/auto-detect endpoint."""
+    video_path: str = Field(
+        ...,
+        description="Server-side path to the video file (e.g. 'videos/clip.MOV')."
+        "  A leading '/' is stripped automatically.",
+    )
+    frame_no: int = Field(0, ge=0, description="Frame index to sample (0 = first frame)")
+    orientation: str = Field(
+        "horizontal",
+        pattern="^(horizontal|vertical)$",
+        description="Expected finish-line orientation in the frame",
+    )
+    angle_thresh_deg: float = Field(
+        15.0, ge=1.0, le=45.0,
+        description="Max deviation from target axis to consider a segment (degrees)",
+    )
+    expected_y_frac: List[float] = Field(
+        [0.2, 0.9],
+        min_length=2, max_length=2,
+        description="[lo, hi] vertical band (0–1) where the finish line is expected",
+    )
+    roi_xywh: Optional[List[int]] = Field(
+        None, min_length=4, max_length=4,
+        description="Crop region [x, y, w, h] in pixels; None = auto (right-60 %×bottom-60 %)",
+    )
+    save: bool = Field(True, description="Persist the detected finish line to the race record")
+
+
 # ── Processing ──────────────────────────────────────────────────────
 
 class ProcessStartIn(BaseModel):

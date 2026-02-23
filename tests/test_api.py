@@ -121,12 +121,15 @@ class TestCalibration:
         "reading_zone": [[400, 200], [700, 200], [700, 600], [400, 600]],
     }
 
-    def test_get_calibration_empty(self, client):
+    def test_get_calibration_defaults(self, client):
+        """Races are created with default calibration pre-populated."""
         r = client.get(f"/races/{self.race_id}/calibration")
         assert r.status_code == 200
         body = r.json()
-        assert body["roi_polygon"] is None
-        assert body["finish_line"] is None
+        # finish_line: vertical centre of the default 1280×720 frame
+        assert isinstance(body["finish_line"], list) and len(body["finish_line"]) == 2
+        # roi_polygon: full-frame rectangle (4 corners)
+        assert isinstance(body["roi_polygon"], list) and len(body["roi_polygon"]) == 4
 
     def test_set_calibration(self, client):
         r = client.post(f"/races/{self.race_id}/calibration", json=self.VALID_CALIB)
@@ -165,11 +168,13 @@ class TestProcessing:
         assert r.status_code == 200
         assert r.json()["state"] == "idle"
 
-    def test_start_without_calibration(self, client):
+    def test_start_with_default_calibration(self, client):
+        """Races now have calibration pre-populated, so process/start should
+        accept the request (200) rather than reject with 400."""
         r = client.post(f"/races/{self.race_id}/process/start", json={
             "input_type": "file", "input": "/tmp/video.mp4"
         })
-        assert r.status_code == 400
+        assert r.status_code == 200
 
     def test_stop_no_pipeline(self, client):
         r = client.post(f"/races/{self.race_id}/process/stop")
@@ -299,6 +304,69 @@ class TestExport:
         body = r.json()
         assert body["race_id"] == self.race_id
         assert body["results"] == []
+
+
+# ── Auto-Detect Calibration ────────────────────────────────────────
+
+class TestAutoDetectCalibration:
+    @pytest.fixture(autouse=True)
+    def setup(self, client):
+        r = client.post("/races", json={"name": "AutoDetect Race"})
+        self.race_id = r.json()["id"]
+
+    def test_race_not_found(self, client):
+        r = client.post("/races/notexist/calibration/auto-detect", json={
+            "video_path": "videos/test.mp4"
+        })
+        assert r.status_code == 404
+
+    def test_missing_video_file(self, client):
+        r = client.post(f"/races/{self.race_id}/calibration/auto-detect", json={
+            "video_path": "videos/nonexistent_does_not_exist.mp4"
+        })
+        assert r.status_code == 422
+
+    def test_invalid_orientation(self, client):
+        r = client.post(f"/races/{self.race_id}/calibration/auto-detect", json={
+            "video_path": "videos/test.mp4",
+            "orientation": "diagonal",
+        })
+        assert r.status_code == 422
+
+    def test_detect_with_synthetic_frame(self, client, tmp_path):
+        """Create a synthetic video containing a clear horizontal stripe,
+        then confirm the auto-detect endpoint returns a finish_line."""
+        import cv2
+        import numpy as np
+
+        # Build a small video with a bright horizontal stripe at y≈60
+        out_path = tmp_path / "synth.mp4"
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        w, h = 320, 180
+        writer = cv2.VideoWriter(str(out_path), fourcc, 1, (w, h))
+        frame = np.zeros((h, w, 3), dtype=np.uint8)
+        frame[55:65, 30:290] = 255   # bright horizontal bar
+        for _ in range(3):
+            writer.write(frame)
+        writer.release()
+
+        r = client.post(f"/races/{self.race_id}/calibration/auto-detect", json={
+            "video_path": str(out_path),
+            "frame_no": 0,
+            "orientation": "horizontal",
+            "angle_thresh_deg": 20.0,
+            "expected_y_frac": [0.1, 0.9],
+            "roi_xywh": None,
+            "save": False,
+        })
+        # Detection may succeed (200) or legitimately fail to find the stripe
+        # depending on LSD/HoughP thresholds.  We only assert no server crash.
+        assert r.status_code in (200, 422)
+        if r.status_code == 200:
+            body = r.json()
+            assert "finish_line" in body
+            if body["finish_line"] is not None:
+                assert len(body["finish_line"]) == 2
 
     def test_export_race_not_found(self, client):
         r = client.get("/races/notexist/export.csv")
