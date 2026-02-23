@@ -215,13 +215,17 @@ def extract_bib(
     detection: Detection,
     cfg: OcrConfig,
     reading_zone: list[list[float]] | None = None,
+    crossing_frame_index: int | None = None,
 ) -> OcrResult:
     """Run OCR on burst frames at multiple scales and return fused bib result.
 
+    Frames are processed in approach-first order (pre-crossing frames before
+    post-crossing frames) because the rider's bib faces the camera during
+    approach but is hidden after passing.  If a high-confidence reading is
+    found early, remaining frames are skipped (early-exit optimisation).
+
     Each frame is cropped to the reading zone (or heuristic bib area), then
     processed at ``cfg.zoom_scale`` *and* every scale in ``cfg.extra_scales``.
-    Readings from all scales are pooled before fusion, giving more signal for
-    the confidence-weighted vote.
     """
     engine = get_ocr_engine(cfg.engine)
     readings: list[tuple[str, float]] = []
@@ -229,8 +233,20 @@ def extract_bib(
     # Build the complete set of scales to try, deduplicated and sorted.
     all_scales: list[float] = sorted(set([cfg.zoom_scale] + list(cfg.extra_scales)))
 
-    for bf in burst_frames:
-        # Base crop (zoom_scale = 1.0 pass – we override below per scale)
+    # ── Approach-first ordering ────────────────────────────────────
+    # Pre-crossing frames (rider approaching, bib visible) come first,
+    # ordered from furthest-before to just-before the line.
+    # Post-crossing frames follow but are only used if approach frames
+    # don't produce a confident enough result.
+    if crossing_frame_index is not None:
+        pre  = [f for f in burst_frames if f.index <= crossing_frame_index]
+        post = [f for f in burst_frames if f.index >  crossing_frame_index]
+        ordered_frames = pre + post   # pre already in chronological order
+    else:
+        ordered_frames = burst_frames
+
+    for bf in ordered_frames:
+        # Base crop at scale 1.0 – individual scale passes resize below
         base_crop = _crop_reading_zone(bf.image, reading_zone, detection, 1.0)
         if base_crop is None or base_crop.size == 0:
             continue
@@ -255,6 +271,22 @@ def extract_bib(
                 bib_str = _filter_digits(text, cfg.max_digits)
                 if bib_str:
                     readings.append((bib_str, conf))
+
+        # Early-exit: if any candidate already has accumulated confidence
+        # above the threshold, no need to process post-crossing frames.
+        if readings and crossing_frame_index is not None and bf.index < crossing_frame_index:
+            interim = fuse_readings(readings)
+            if interim.confidence >= cfg.confidence_threshold:
+                logger.debug(
+                    "OCR early-exit at frame %d  bib=%s  conf=%.3f",
+                    bf.index, interim.bib, interim.confidence,
+                )
+                result = interim
+                logger.info(
+                    "OCR result (early)  bib=%s  conf=%.3f  readings=%d  scales=%s  candidates=%s",
+                    result.bib, result.confidence, len(readings), all_scales, result.candidates,
+                )
+                return result
 
     result = fuse_readings(readings)
     logger.info(

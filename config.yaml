@@ -48,8 +48,8 @@ crossing:
   interpolate_timestamp: true
 
 burst:
-  frames_before: 10
-  frames_after: 10
+  frames_before: 30    # 1 s at 30 fps – captures the approach where bibs face camera
+  frames_after: 5     # small tail; crossing frame + a few post-line frames
 
 ocr:
   engine: "easyocr"            # easyocr | paddleocr | tesseract

@@ -229,9 +229,10 @@ class ProcessingPipeline:
             event, burst_frames, self._cfg.output.base_dir, self._race_id,
         )
 
-        # OCR
+        # OCR – pass crossing frame index so approach frames are tried first
         ocr_result = extract_bib(
             burst_frames, event.detection, self._cfg.ocr, reading_zone,
+            crossing_frame_index=event.frame_index,
         )
 
         status = "AUTO_OK" if ocr_result.confidence >= self._cfg.ocr.confidence_threshold else "NEEDS_REVIEW"
