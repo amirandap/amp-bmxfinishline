@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grassroot-finishline-backend"
+version = "1.0.0"
+description = "Bicycle race finish-line detection backend with OCR bib reading"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "pydantic>=2.5",
+    "pydantic-settings>=2.1",
+    "pyyaml>=6.0",
+    "opencv-python-headless>=4.8",
+    "ultralytics>=8.1",
+    "paddleocr>=2.7",
+    "paddlepaddle>=2.5",
+    "numpy>=1.26",
+    "Pillow>=10.0",
+    "python-multipart>=0.0.6",
+    "aiosqlite>=0.19",
+    "psycopg2-binary>=2.9;extra=='postgres'",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg2-binary>=2.9"]
+easyocr = ["easyocr>=1.7"]
+dev = ["pytest>=7.4", "httpx>=0.25", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

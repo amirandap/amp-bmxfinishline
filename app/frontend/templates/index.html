@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Finishline Dashboard</title>
+    <link rel="stylesheet" href="/src/style.css">
+</head>
+<body>
+<header>
+    <h1>&#127937; Grassroot Finishline</h1>
+</header>
+
+<main>
+    <!-- Left panel: race list -->
+    <section id="race-panel">
+        <h2>Races</h2>
+        <div class="row">
+            <input type="text" id="new-race-name" placeholder="New race name" maxlength="256">
+            <button id="create-race">+ Create</button>
+        </div>
+        <ul id="race-list"></ul>
+    </section>
+
+    <!-- Right panel: race detail -->
+    <section id="detail-panel" style="display:none;">
+        <div class="panel-header">
+            <h2 id="detail-race-name"></h2>
+            <button id="delete-race" class="btn-danger">Delete Race</button>
+        </div>
+
+        <!-- Calibration -->
+        <details id="calibration-section">
+            <summary>Calibration</summary>
+            <textarea id="calibration-json" cols="60" rows="8" spellcheck="false"></textarea>
+            <div class="row">
+                <button id="save-calibration">Save Calibration</button>
+            </div>
+        </details>
+
+        <!-- Processing -->
+        <details id="process-section" open>
+            <summary>Processing</summary>
+
+            <!-- File upload row (shown only when input type = file) -->
+            <div class="row" id="upload-row">
+                <label class="file-btn" for="video-file-input">&#128194; Choose Video</label>
+                <input type="file" id="video-file-input" accept="video/*">
+                <span id="upload-filename" class="muted-label">No file chosen</span>
+                <button id="upload-btn" style="display:none;">&#8679; Upload to Server</button>
+                <span id="upload-progress" class="muted-label" style="display:none;"></span>
+            </div>
+
+            <div class="row">
+                <select id="input-type">
+                    <option value="file">File (MP4)</option>
+                    <option value="rtmp">RTMP Stream</option>
+                </select>
+                <input type="text" id="input-path" placeholder="Path or RTMP URL" style="flex:1">
+                <button id="start-process">&#9654; Start</button>
+                <button id="stop-process">&#9632; Stop</button>
+            </div>
+            <p id="process-status-line">
+                Status: <strong id="process-status">idle</strong>
+                &nbsp;|&nbsp; Frames: <span id="frames-processed">0</span>
+                &nbsp;|&nbsp; Arrivals: <span id="arrivals-detected">0</span>
+            </p>
+            <p id="camera-warn" class="warn" style="display:none;">
+                &#9888; Camera movement detected &mdash; recalibrate if needed.
+            </p>
+        </details>
+
+        <!-- Canvas preview of the selected / uploaded video -->
+        <div id="preview-panel" style="display:none;">
+            <canvas id="preview-canvas"></canvas>
+            <p class="muted-label" id="preview-label"></p>
+        </div>
+
+        <!-- Arrivals -->
+        <section id="arrivals-section">
+            <div class="row">
+                <h3>Arrivals</h3>
+                <button id="refresh-arrivals">&#8635; Refresh</button>
+            </div>
+            <table id="arrivals-table">
+                <thead>
+                    <tr>
+                        <th>Pos</th>
+                        <th>Bib</th>
+                        <th>Time (ms)</th>
+                        <th>Conf</th>
+                        <th>Status</th>
+                        <th>Image</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+
+        <!-- Crossing thumbnail logger — shows all captured crossing frames -->
+        <section id="thumb-logger">
+            <div class="row">
+                <h3>Crossing Log</h3>
+                <span class="muted-label" id="thumb-count"></span>
+            </div>
+            <div id="thumb-log-list">
+                <p class="muted-label" id="thumb-empty-msg">No crossings yet — start processing to populate this log.</p>
+            </div>
+        </section>
+    </section>
+</main>
+
+<!-- Hidden video element – used to render first frame onto preview canvas -->
+<video id="hidden-video" style="display:none" preload="auto" muted></video>
+
+<!-- Lightbox – full-size crossing frame viewer -->
+<dialog id="lightbox">
+    <button id="lightbox-close" title="Close (Esc)">&#10005;</button>
+    <img id="lightbox-img" src="" alt="Crossing frame">
+</dialog>
+
+<!-- Bib edit modal -->
+<dialog id="bib-modal">
+    <form method="dialog">
+        <h3>Edit Bib</h3>
+        <input type="text" id="bib-input" maxlength="8" placeholder="Bib number">
+        <div class="row">
+            <button id="bib-save" type="button">Save</button>
+            <button value="cancel">Cancel</button>
+        </div>
+    </form>
+</dialog>
+
+    <!-- Vite bundle will inject scripts during development/build -->
+    <script type="module" src="/src/main.js"></script>
+</body>
+</html>

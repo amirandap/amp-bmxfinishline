@@ -1,0 +1,5 @@
+# This directory contains generated Alembic migration scripts.
+# Generate a new migration with:
+#   alembic revision --autogenerate -m "describe change"
+# Apply migrations with:
+#   alembic upgrade head

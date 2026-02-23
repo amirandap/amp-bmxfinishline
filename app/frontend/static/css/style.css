@@ -1,0 +1,266 @@
+/* Grassroot Finishline Dashboard */
+*, *::before, *::after { box-sizing: border-box; }
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    margin: 0;
+    background: #f0f2f5;
+    color: #222;
+}
+
+header {
+    background: #1a1a2e;
+    color: #fff;
+    padding: 12px 24px;
+}
+header h1 { margin: 0; font-size: 1.4rem; }
+
+main {
+    display: flex;
+    gap: 16px;
+    padding: 16px;
+    min-height: calc(100vh - 56px);
+}
+
+/* ── Race panel ── */
+#race-panel {
+    width: 260px;
+    flex-shrink: 0;
+    background: #fff;
+    border-radius: 8px;
+    padding: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.1);
+    align-self: flex-start;
+}
+#race-panel h2 { margin-top: 0; font-size: 1rem; }
+
+#race-list {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+}
+#race-list li {
+    padding: 8px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+#race-list li:hover { background: #f0f4ff; }
+#race-list li.active { background: #dbe9ff; font-weight: 600; }
+.race-id { color: #888; font-size: 0.75rem; font-family: monospace; }
+
+/* ── Detail panel ── */
+#detail-panel {
+    flex: 1;
+    background: #fff;
+    border-radius: 8px;
+    padding: 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,.1);
+}
+.panel-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 12px;
+}
+.panel-header h2 { margin: 0; }
+
+/* ── Row utility ── */
+.row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px 0;
+    flex-wrap: wrap;
+}
+
+/* ── Inputs / buttons ── */
+input[type=text], textarea, select {
+    padding: 6px 10px;
+    border: 1px solid #ccc;
+    border-radius: 6px;
+    font-size: 0.9rem;
+}
+textarea { resize: vertical; width: 100%; font-family: monospace; }
+
+button {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 6px;
+    background: #3a7bd5;
+    color: #fff;
+    cursor: pointer;
+    font-size: 0.9rem;
+    white-space: nowrap;
+}
+button:hover { background: #2e63b8; }
+.btn-danger { background: #d93025; }
+.btn-danger:hover { background: #b3261e; }
+.btn-sm { padding: 3px 8px; font-size: 0.8rem; }
+
+/* ── details/summary ── */
+details { border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px; }
+summary { font-weight: 600; cursor: pointer; user-select: none; }
+
+/* ── Arrivals table ── */
+#arrivals-table { border-collapse: collapse; width: 100%; font-size: 0.88rem; margin-top: 8px; }
+#arrivals-table th { background: #f5f5f5; font-weight: 600; }
+#arrivals-table th, #arrivals-table td { padding: 7px 10px; border-bottom: 1px solid #eee; text-align: left; }
+#arrivals-table tr:hover td { background: #f9fbff; }
+#arrivals-table h3 { margin: 0; }
+
+.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 0.78rem; font-weight: 600; }
+.badge.ok { background: #d4edda; color: #155724; }
+.badge.manual { background: #cce5ff; color: #004085; }
+.badge.review { background: #fff3cd; color: #856404; }
+
+.thumb { width: 80px; height: 50px; object-fit: cover; border-radius: 4px; cursor: pointer; }
+.img-cell { width: 90px; }
+.bib-cell { font-weight: 700; font-family: monospace; }
+
+/* ── Process status ── */
+#process-status-line { margin: 6px 0; }
+.warn { color: #c8500a; font-weight: 600; }
+
+/* ── Toast notifications ── */
+.toast {
+    position: fixed;
+    bottom: 24px;
+    right: 24px;
+    background: #333;
+    color: #fff;
+    padding: 10px 18px;
+    border-radius: 8px;
+    z-index: 9999;
+    font-size: 0.9rem;
+    animation: fadein .3s;
+}
+.toast-error { background: #d93025; }
+@keyframes fadein { from { opacity:0; transform: translateY(8px); } to { opacity:1; } }
+
+/* ── File upload row ── */
+.file-btn {
+    display: inline-block;
+    padding: 6px 14px;
+    border-radius: 6px;
+    background: #3a7bd5;
+    color: #fff;
+    cursor: pointer;
+    font-size: 0.9rem;
+    white-space: nowrap;
+    user-select: none;
+}
+.file-btn:hover { background: #2e63b8; }
+input[type=file] { display: none; }
+.muted-label { color: #888; font-size: 0.82rem; }
+
+/* ── Live preview canvas panel ── */
+#preview-panel {
+    margin: 10px 0 14px;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: #111;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+#preview-canvas {
+    display: block;
+    max-width: 100%;
+    max-height: 320px;
+    object-fit: contain;
+}
+#preview-label {
+    margin: 4px 0;
+    font-size: 0.78rem;
+    color: #aaa;
+    font-family: monospace;
+}
+
+/* ── Thumbnail crossing logger ── */
+#thumb-logger { margin-top: 20px; }
+#thumb-logger h3 { margin: 0 0 4px; }
+
+#thumb-log-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 10px 0;
+    min-height: 48px;
+}
+
+.log-thumb-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    width: 100px;
+    cursor: pointer;
+}
+.log-thumb-item img {
+    width: 100px;
+    height: 64px;
+    object-fit: cover;
+    border-radius: 6px;
+    border: 2px solid transparent;
+    transition: border-color .15s;
+}
+.log-thumb-item img:hover { border-color: #3a7bd5; }
+.log-thumb-meta {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font-size: 0.75rem;
+    line-height: 1.3;
+    text-align: center;
+    color: #444;
+}
+
+/* ── Lightbox ── */
+#lightbox {
+    border: none;
+    border-radius: 10px;
+    padding: 0;
+    background: transparent;
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow: hidden;
+}
+#lightbox::backdrop { background: rgba(0,0,0,.75); }
+#lightbox img {
+    display: block;
+    max-width: 90vw;
+    max-height: 85vh;
+    border-radius: 8px;
+}
+#lightbox-close {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: rgba(0,0,0,.6);
+    color: #fff;
+    border: none;
+    border-radius: 50%;
+    width: 32px;
+    height: 32px;
+    font-size: 1rem;
+    cursor: pointer;
+    z-index: 10;
+    line-height: 1;
+    padding: 0;
+}
+#lightbox-close:hover { background: #d93025; }
+
+/* ── Modal ── */
+dialog {
+    border: none;
+    border-radius: 10px;
+    padding: 24px;
+    box-shadow: 0 4px 24px rgba(0,0,0,.2);
+    min-width: 280px;
+}
+dialog h3 { margin-top: 0; }
+dialog::backdrop { background: rgba(0,0,0,.4); }

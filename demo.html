@@ -1,0 +1,1149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>🏁 Finishline Detector – Browser Demo</title>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/ort.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3248;
+      --accent: #f0c04a;
+      --accent2: #e05252;
+      --green: #4caf89;
+      --text: #e8eaf0;
+      --muted: #7a7f9a;
+      --font: 'Segoe UI', system-ui, sans-serif;
+      --mono: 'Cascadia Code', 'Fira Code', monospace;
+    }
+
+    body {
+      font-family: var(--font);
+      background: var(--bg);
+      color: var(--text);
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    header {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 18px;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 1rem;
+      font-weight: 700;
+      letter-spacing: .04em;
+      white-space: nowrap;
+      margin-right: 8px;
+    }
+
+    .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+    button {
+      padding: 5px 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface2);
+      color: var(--text);
+      font: inherit;
+      font-size: .85rem;
+      cursor: pointer;
+      transition: background .15s, border-color .15s;
+      white-space: nowrap;
+    }
+    button:hover { background: #2c3050; border-color: #4a4f6e; }
+    button:disabled { opacity: .4; cursor: default; }
+    button.active { background: #2e2410; border-color: var(--accent); color: var(--accent); }
+    button.primary { background: #1e2e1e; border-color: var(--green); color: var(--green); }
+    button.danger  { background: #2a1a1a; border-color: var(--accent2); color: var(--accent2); }
+
+    label.file-btn {
+      padding: 5px 14px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--surface2);
+      color: var(--text);
+      font-size: .85rem;
+      cursor: pointer;
+      transition: background .15s;
+      white-space: nowrap;
+    }
+    label.file-btn:hover { background: #2c3050; }
+    input[type="file"] { display: none; }
+
+    .sep { width: 1px; height: 20px; background: var(--border); margin: 0 4px; }
+
+    .slider-row { display: flex; align-items: center; gap: 6px; font-size: .8rem; color: var(--muted); }
+    input[type="range"] { width: 90px; accent-color: var(--accent); }
+
+    /* ── Main area ───────────────────────────────────────────── */
+    main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+
+    /* ── Canvas panel ────────────────────────────────────────── */
+    #canvas-panel {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: #080a10;
+      position: relative;
+      overflow: hidden;
+    }
+
+    #canvas-panel .placeholder {
+      text-align: center;
+      color: var(--muted);
+      pointer-events: none;
+      user-select: none;
+    }
+    #canvas-panel .placeholder svg { opacity: .2; display: block; margin: 0 auto 12px; }
+    #canvas-panel .placeholder p { font-size: .9rem; }
+
+    #main-canvas {
+      /* Intrinsic size = native video res; CSS scales it to fit the panel */
+      max-width: 100%;
+      max-height: 100%;
+      width: auto;
+      height: auto;
+      display: block;
+      cursor: crosshair;
+    }
+    #main-canvas.cursor-default { cursor: default; }
+
+    /* Flash overlay when crossing detected */
+    #flash {
+      position: absolute;
+      inset: 0;
+      background: rgba(240,192,74,.15);
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity .05s;
+    }
+    #flash.active { opacity: 1; transition: none; }
+
+    /* ── Log panel ───────────────────────────────────────────── */
+    #log-panel {
+      width: 300px;
+      min-width: 260px;
+      background: var(--surface);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #log-header {
+      padding: 10px 14px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    #log-header h2 { font-size: .85rem; font-weight: 600; color: var(--muted); letter-spacing: .07em; text-transform: uppercase; }
+
+    #log-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    #log-list::-webkit-scrollbar { width: 5px; }
+    #log-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+    .log-entry {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      display: flex;
+      gap: 10px;
+      animation: slideIn .2s ease;
+    }
+    @keyframes slideIn {
+      from { opacity: 0; transform: translateX(10px); }
+      to   { opacity: 1; transform: translateX(0); }
+    }
+    .log-entry.pending { border-color: #3a3a1a; }
+
+    .log-thumb-placeholder {
+      width: 60px;
+      height: 45px;
+      flex-shrink: 0;
+      background: var(--bg);
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .6rem;
+      color: var(--muted);
+    }
+
+    .log-info { flex: 1; overflow: hidden; }
+    .log-rank {
+      font-size: .68rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      margin-bottom: 3px;
+    }
+    .log-bib {
+      font-size: 1.5rem;
+      font-weight: 700;
+      font-family: var(--mono);
+      line-height: 1;
+      color: var(--accent);
+    }
+    .log-bib.unknown { color: var(--muted); font-size: 1rem; margin-top: 4px; }
+    .log-bib.processing { color: var(--muted); font-size: .8rem; margin-top: 4px; font-style: italic; }
+    .log-conf {
+      font-size: .7rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .log-time {
+      font-size: .68rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      margin-top: 3px;
+    }
+
+    /* ── Status bar ──────────────────────────────────────────── */
+    #status-bar {
+      padding: 5px 14px;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
+      font-size: .75rem;
+      color: var(--muted);
+      display: flex;
+      gap: 18px;
+      flex-shrink: 0;
+    }
+    #status-bar span { white-space: nowrap; }
+    #status-bar .dot {
+      display: inline-block;
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--muted);
+      margin-right: 5px;
+      vertical-align: middle;
+    }
+    #status-bar .dot.running { background: var(--green); box-shadow: 0 0 5px var(--green); }
+    #status-bar .dot.drawing { background: var(--accent); }
+
+    /* ── Lightbox ────────────────────────────────────────────── */
+    .log-thumb {
+      width: 60px;
+      height: 45px;
+      object-fit: cover;
+      border-radius: 4px;
+      background: #111;
+      flex-shrink: 0;
+      border: 1px solid var(--border);
+      cursor: zoom-in;
+      transition: opacity .12s, box-shadow .12s;
+    }
+    .log-thumb:hover { opacity: .85; box-shadow: 0 0 0 2px var(--accent); }
+
+    #lightbox {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      background: rgba(0,0,0,.82);
+      backdrop-filter: blur(6px);
+      align-items: center;
+      justify-content: center;
+      flex-direction: column;
+      gap: 14px;
+    }
+    #lightbox.open { display: flex; }
+
+    #lightbox-img {
+      max-width: 90vw;
+      max-height: 80vh;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      box-shadow: 0 8px 40px rgba(0,0,0,.7);
+    }
+    #lightbox-meta {
+      font-size: .85rem;
+      color: var(--muted);
+      font-family: var(--mono);
+      text-align: center;
+    }
+    #lightbox-close {
+      position: fixed;
+      top: 16px; right: 20px;
+      font-size: 1.4rem;
+      background: none;
+      border: none;
+      color: var(--muted);
+      cursor: pointer;
+      line-height: 1;
+      padding: 4px 8px;
+    }
+    #lightbox-close:hover { color: var(--text); background: none; }
+
+    /* ── Detection boxes ─────────────────────────────────────── */
+    .det-bicycle { color: #4cddff; }
+    .det-person  { color: #c084fc; }
+    #model-status {
+      font-size: .75rem;
+      color: var(--muted);
+      white-space: nowrap;
+      font-family: var(--mono);
+    }
+    #model-status.ready  { color: var(--green); }
+    #model-status.error  { color: var(--accent2); }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>🏁 Finishline Detector</h1>
+  <div class="controls">
+    <label class="file-btn" for="video-input">📂 Load Video</label>
+    <input type="file" id="video-input" accept="video/*">
+
+    <div class="sep"></div>
+
+    <button id="btn-draw" title="Click then drag on the canvas to set the finish line">✏️ Draw Line</button>
+    <button id="btn-clear-line" title="Remove finish line">✕ Clear Line</button>
+
+    <div class="sep"></div>
+
+    <button id="btn-start" class="primary" disabled>▶ Start</button>
+    <button id="btn-stop" disabled>■ Stop</button>
+
+    <div class="sep"></div>
+
+    <div class="slider-row">
+      Trigger
+      <input type="range" id="threshold-slider" min="1" max="80" value="8" step="1">
+      <span id="threshold-val">8</span>
+    </div>
+
+    <div class="slider-row">
+      Cooldown
+      <input type="range" id="cooldown-slider" min="500" max="5000" value="2000" step="250">
+      <span id="cooldown-val">2.0s</span>
+    </div>
+
+    <div class="sep"></div>
+
+    <button id="btn-bike-filter" class="active" title="Only trigger when a bicycle or person is detected on the finish line">🚲 Bike filter</button>
+    <span id="model-status">model: loading…</span>
+  </div>
+</header>
+
+<main>
+  <!-- Canvas area -->
+  <div id="canvas-panel">
+    <div class="placeholder" id="placeholder">
+      <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+        <rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/>
+      </svg>
+      <p>Load a video to begin</p>
+    </div>
+    <canvas id="main-canvas" style="display:none"></canvas>
+    <div id="flash"></div>
+  </div>
+
+  <!-- Log panel -->
+  <div id="log-panel">
+    <div id="log-header">
+      <h2>Detections</h2>
+      <button class="danger" id="btn-clear-log" style="padding:3px 10px;font-size:.75rem;">Clear</button>
+    </div>
+    <div id="log-list">
+      <div style="color:var(--muted);font-size:.8rem;text-align:center;margin-top:24px;line-height:1.7;">
+        Draw a finish line on the video,<br>then press <strong>▶ Start</strong>.<br><br>
+        Crossings will appear here.
+      </div>
+    </div>
+  </div>
+</main>
+
+<div id="status-bar">
+  <span><span class="dot" id="run-dot"></span><span id="status-text">idle</span></span>
+  <span>Frames: <strong id="frame-count">0</strong></span>
+  <span>Detections: <strong id="detect-count">0</strong></span>
+  <span style="display:flex;align-items:center;gap:6px">
+    Motion:
+    <span style="display:inline-block;width:120px;height:8px;background:var(--border);border-radius:4px;overflow:hidden;vertical-align:middle">
+      <span id="motion-bar" style="display:block;height:100%;width:0%;background:var(--green);border-radius:4px;transition:width .08s"></span>
+    </span>
+    <strong id="motion-val" style="font-family:var(--mono);font-size:.75rem;min-width:28px">0</strong>
+  </span>
+  <span id="ocr-status" style="color:var(--accent)"></span>
+</div>
+
+<!-- Hidden video element -->
+<video id="video" style="display:none" preload="auto"></video>
+
+<!-- Lightbox -->
+<div id="lightbox">
+  <button id="lightbox-close" title="Close (Esc)">✕</button>
+  <img id="lightbox-img" src="" alt="Crossing detail">
+  <div id="lightbox-meta"></div>
+</div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────
+const state = {
+  finishLine: null,      // {x1,y1,x2,y2} in canvas coords
+  isDrawing: false,
+  drawStart: null,
+  isRunning: false,
+  _lastTime: -1,         // fallback rAF dedup
+  frameCount: 0,
+  detectCount: 0,
+  prevBand: null,        // Float32Array — band pixels from last unique frame
+  cooldownUntil: 0,
+  threshold: 8,
+  cooldownMs: 2000,
+  entries: [],
+  ocrWorker: null,
+  ocrReady: false,
+  // ── YOLOv8n / bike filter ──────────────────────────────────
+  ortSession: null,        // onnxruntime-web InferenceSession
+  modelReady: false,
+  bikeFilter: true,        // only fire if a bike/person is on the line
+  lastDetections: [],      // most recent YOLOv8 predictions
+  detLoopId: null,         // setInterval handle for background inference
+};
+
+// ── DOM refs ──────────────────────────────────────────────────────
+const video        = document.getElementById('video');
+const canvas       = document.getElementById('main-canvas');
+const ctx          = canvas.getContext('2d', { willReadFrequently: true });
+const placeholder  = document.getElementById('placeholder');
+const flash        = document.getElementById('flash');
+const logList      = document.getElementById('log-list');
+const runDot       = document.getElementById('run-dot');
+const statusText   = document.getElementById('status-text');
+const frameCount   = document.getElementById('frame-count');
+const detectCount  = document.getElementById('detect-count');
+const ocrStatus    = document.getElementById('ocr-status');
+
+// ── Tesseract worker init ─────────────────────────────────────────
+(async () => {
+  ocrStatus.textContent = 'OCR: loading…';
+  try {
+    state.ocrWorker = await Tesseract.createWorker('eng', 1, {
+      logger: () => {},
+    });
+    await state.ocrWorker.setParameters({
+      tessedit_char_whitelist: '0123456789',
+      tessedit_pageseg_mode: '11',  // sparse text — finds digits anywhere in image
+    });
+    state.ocrReady = true;
+    ocrStatus.textContent = 'OCR: ready';
+    setTimeout(() => { ocrStatus.textContent = ''; }, 2000);
+  } catch (e) {
+    ocrStatus.textContent = 'OCR: failed – ' + e.message;
+  }
+})();
+
+// ── YOLOv8n ONNX model loading ────────────────────────────────────
+// ~6 MB download. Swap this for a local path ('yolov8n.onnx') if you
+// want to avoid the external fetch.
+const YOLO_MODEL_URL = 'yolov8n.onnx';  // served from the same directory as this file
+
+(async () => {
+  const el = document.getElementById('model-status');
+  // Point ORT to the CDN-hosted WASM binaries so they don't 404
+  ort.env.wasm.wasmPaths =
+    'https://cdn.jsdelivr.net/npm/onnxruntime-web@1.20.1/dist/';
+  try {
+    el.textContent = 'model: downloading…';
+    state.ortSession = await ort.InferenceSession.create(YOLO_MODEL_URL, {
+      executionProviders: ['webgl', 'wasm'],
+    });
+    state.modelReady = true;
+    el.textContent = 'model: YOLOv8n ✓';
+    el.className = 'ready';
+    setTimeout(() => { el.textContent = ''; }, 3000);
+  } catch (e) {
+    el.textContent = 'model: failed';
+    el.className = 'error';
+    console.error('YOLOv8n load error:', e);
+  }
+})();
+
+// ── YOLOv8 inference helpers ──────────────────────────────────────
+const YOLO_SIZE   = 640;
+const CONF_THRESH = 0.30;
+const NMS_THRESH  = 0.45;
+// Only care about persons (0) and bicycles (1) from the 80 COCO classes
+const YOLO_CLASSES = { 0: 'person', 1: 'bicycle' };
+
+async function runYolo() {
+  if (!state.modelReady || !state.ortSession) return [];
+
+  // ── Letterbox: resize canvas into 640×640 with grey padding ──
+  const off = document.createElement('canvas');
+  off.width = off.height = YOLO_SIZE;
+  const offCtx = off.getContext('2d');
+  const scale  = Math.min(YOLO_SIZE / canvas.width, YOLO_SIZE / canvas.height);
+  const dw     = Math.round((YOLO_SIZE - canvas.width  * scale) / 2);
+  const dh     = Math.round((YOLO_SIZE - canvas.height * scale) / 2);
+  const dW     = Math.round(canvas.width  * scale);
+  const dH     = Math.round(canvas.height * scale);
+  offCtx.fillStyle = 'rgb(114,114,114)';
+  offCtx.fillRect(0, 0, YOLO_SIZE, YOLO_SIZE);
+  offCtx.drawImage(canvas, dw, dh, dW, dH);
+
+  // ── Build [1, 3, 640, 640] NCHW float32 tensor (RGB, /255) ───
+  const px  = offCtx.getImageData(0, 0, YOLO_SIZE, YOLO_SIZE).data;
+  const inp = new Float32Array(3 * YOLO_SIZE * YOLO_SIZE);
+  const pl  = YOLO_SIZE * YOLO_SIZE;
+  for (let i = 0; i < pl; i++) {
+    inp[i]        = px[i * 4]     / 255; // R
+    inp[i + pl]   = px[i * 4 + 1] / 255; // G
+    inp[i + pl*2] = px[i * 4 + 2] / 255; // B
+  }
+
+  const tensor  = new ort.Tensor('float32', inp, [1, 3, YOLO_SIZE, YOLO_SIZE]);
+  const results = await state.ortSession.run({ images: tensor });
+  const raw     = results['output0'].data; // [1, 84, 8400]
+  const N       = 8400;
+
+  // ── Decode predictions ────────────────────────────────────────
+  const dets = [];
+  for (let i = 0; i < N; i++) {
+    let bestScore = CONF_THRESH, bestCls = -1;
+    for (const cidx of Object.keys(YOLO_CLASSES)) {
+      const s = raw[(4 + +cidx) * N + i];
+      if (s > bestScore) { bestScore = s; bestCls = +cidx; }
+    }
+    if (bestCls === -1) continue;
+
+    // cx,cy,w,h in letterbox pixel space → undo padding+scale → canvas px
+    const cx_lb = raw[0 * N + i], cy_lb = raw[1 * N + i];
+    const w_lb  = raw[2 * N + i], h_lb  = raw[3 * N + i];
+    const x1 = (cx_lb - w_lb / 2 - dw) / scale;
+    const y1 = (cy_lb - h_lb / 2 - dh) / scale;
+    const bw  = w_lb / scale, bh = h_lb / scale;
+    const cx1 = Math.max(0, x1);
+    const cy1 = Math.max(0, y1);
+    const cw  = Math.min(canvas.width  - cx1, bw);
+    const ch  = Math.min(canvas.height - cy1, bh);
+    if (cw < 8 || ch < 8) continue;
+    dets.push({ class: YOLO_CLASSES[bestCls], score: bestScore, bbox: [cx1, cy1, cw, ch] });
+  }
+  return yoloNms(dets);
+}
+
+function boxIou(a, b) {
+  const ax2 = a.bbox[0]+a.bbox[2], ay2 = a.bbox[1]+a.bbox[3];
+  const bx2 = b.bbox[0]+b.bbox[2], by2 = b.bbox[1]+b.bbox[3];
+  const ix  = Math.max(0, Math.min(ax2,bx2) - Math.max(a.bbox[0],b.bbox[0]));
+  const iy  = Math.max(0, Math.min(ay2,by2) - Math.max(a.bbox[1],b.bbox[1]));
+  const inter = ix * iy;
+  return inter / (a.bbox[2]*a.bbox[3] + b.bbox[2]*b.bbox[3] - inter);
+}
+
+function yoloNms(dets) {
+  dets.sort((a, b) => b.score - a.score);
+  const keep = [], seen = new Set();
+  for (let i = 0; i < dets.length; i++) {
+    if (seen.has(i)) continue;
+    keep.push(dets[i]);
+    for (let j = i+1; j < dets.length; j++)
+      if (!seen.has(j) && dets[i].class === dets[j].class && boxIou(dets[i], dets[j]) > NMS_THRESH)
+        seen.add(j);
+  }
+  return keep;
+}
+
+// ── Video loading ─────────────────────────────────────────────────
+document.getElementById('video-input').addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const url = URL.createObjectURL(file);
+  video.src = url;
+  video.load();
+  video.addEventListener('loadedmetadata', () => {
+    // Set canvas buffer to native video resolution, capped at 1280×720.
+    // CSS max-width/max-height shrinks the *display* size to fit any panel;
+    // canvasPt() uses getBoundingClientRect so coordinates always map correctly.
+    const MAX_W = 1280, MAX_H = 720;
+    const scale = Math.min(1, MAX_W / video.videoWidth, MAX_H / video.videoHeight);
+    canvas.width  = Math.round(video.videoWidth  * scale);
+    canvas.height = Math.round(video.videoHeight * scale);
+
+    placeholder.style.display = 'none';
+    canvas.style.display = 'block';
+
+    // Draw first frame
+    video.currentTime = 0;
+    video.addEventListener('seeked', () => {
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      drawOverlay();
+    }, { once: true });
+
+    document.getElementById('btn-start').disabled = false;
+    state.finishLine = null;
+    state.prevBand = null;
+    setStatus('idle');
+  }, { once: true });
+});
+
+// ── Finish line drawing ───────────────────────────────────────────
+document.getElementById('btn-draw').addEventListener('click', () => {
+  state.isDrawing = !state.isDrawing;
+  document.getElementById('btn-draw').classList.toggle('active', state.isDrawing);
+  canvas.classList.toggle('cursor-default', !state.isDrawing);
+  canvas.style.cursor = state.isDrawing ? 'crosshair' : 'default';
+});
+
+document.getElementById('btn-clear-line').addEventListener('click', () => {
+  state.finishLine = null;
+  state.prevBand = null;
+  redrawStatic();
+});
+
+canvas.addEventListener('mousedown', e => {
+  if (!state.isDrawing) return;
+  const pt = canvasPt(e);
+  state.drawStart = pt;
+});
+
+canvas.addEventListener('mousemove', e => {
+  if (!state.isDrawing || !state.drawStart) return;
+  const pt = canvasPt(e);
+  redrawStatic();
+  drawLine(state.drawStart.x, state.drawStart.y, pt.x, pt.y, '#f0c04a', 2, [8, 4]);
+});
+
+canvas.addEventListener('mouseup', e => {
+  if (!state.isDrawing || !state.drawStart) return;
+  const pt = canvasPt(e);
+  const dx = pt.x - state.drawStart.x;
+  const dy = pt.y - state.drawStart.y;
+  if (Math.sqrt(dx*dx + dy*dy) > 10) {
+    state.finishLine = { x1: state.drawStart.x, y1: state.drawStart.y, x2: pt.x, y2: pt.y };
+    state.prevBand = null;
+  }
+  state.drawStart = null;
+  state.isDrawing = false;
+  document.getElementById('btn-draw').classList.remove('active');
+  canvas.style.cursor = 'default';
+  redrawStatic();
+});
+
+function canvasPt(e) {
+  const r = canvas.getBoundingClientRect();
+  return {
+    x: (e.clientX - r.left) * (canvas.width  / r.width),
+    y: (e.clientY - r.top)  * (canvas.height / r.height),
+  };
+}
+
+// ── Start / Stop ──────────────────────────────────────────────────
+document.getElementById('btn-start').addEventListener('click', () => {
+  if (state.isRunning) return;
+  if (!state.finishLine) {
+    alert('Draw a finish line first (click "✏️ Draw Line" then drag on the video).');
+    return;
+  }
+  state.isRunning = true;
+  state.frameCount = 0;
+  state.detectCount = 0;
+  state.prevBand = null;
+  state._lastTime = -1;
+  document.getElementById('btn-start').disabled = true;
+  document.getElementById('btn-stop').disabled = false;
+  setStatus('running');
+  video.play();
+  // Background inference loop — runs YOLOv8n ~2fps independently of frame loop
+  state.lastDetections = [];
+  if (state.modelReady) {
+    state.detLoopId = setInterval(async () => {
+      if (!state.isRunning || !state.ortSession) return;
+      try {
+        state.lastDetections = await runYolo();
+      } catch (_) {}
+    }, 500);
+  }
+  scheduleFrame();
+});
+
+document.getElementById('btn-stop').addEventListener('click', stopProcessing);
+
+video.addEventListener('ended', () => {
+  stopProcessing();
+  setStatus('finished');
+});
+
+function stopProcessing() {
+  state.isRunning = false;
+  video.pause();
+  if (state.detLoopId) { clearInterval(state.detLoopId); state.detLoopId = null; }
+  state.lastDetections = [];
+  document.getElementById('btn-start').disabled = false;
+  document.getElementById('btn-stop').disabled = true;
+  setStatus('stopped');
+}
+
+// ── Per-frame callback — fires once per unique decoded video frame ─
+function scheduleFrame() {
+  if (!state.isRunning) return;
+  if (typeof video.requestVideoFrameCallback === 'function') {
+    // Chrome/Edge/Safari 15.4+: guaranteed one call per decoded frame
+    video.requestVideoFrameCallback(onVideoFrame);
+  } else {
+    // Fallback rAF: skip if currentTime hasn't advanced
+    requestAnimationFrame(() => {
+      if (!state.isRunning) return;
+      const t = video.currentTime;
+      if (t !== state._lastTime) { state._lastTime = t; onVideoFrame(); }
+      else scheduleFrame();
+    });
+  }
+}
+
+function onVideoFrame() {
+  if (!state.isRunning) return;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  state.frameCount++;
+  frameCount.textContent = state.frameCount;
+  drawOverlay();
+  if (state.finishLine) checkCrossing();
+  scheduleFrame();
+}
+
+// ── Detection: wide band + 92nd-percentile diff ───────────────────
+// Sample ALONG_N points along the line × PERP_N rows perpendicular.
+// Even if a rider covers only 15% of the line width, those samples
+// will appear near the top of the sorted diffs and still trigger.
+const ALONG_N = 80;
+const PERP_N  = 14;  // ±7 px perpendicular — creates a ~14px wide detection band
+
+function sampleBand(line) {
+  const { x1, y1, x2, y2 } = line;
+  const dx = x2 - x1, dy = y2 - y1;
+  const len = Math.sqrt(dx*dx + dy*dy) || 1;
+  const px = -dy / len, py = dx / len;  // unit perpendicular
+
+  const halfP = Math.ceil(PERP_N / 2) + 2;
+  const corners = [
+    [x1 + px*halfP, y1 + py*halfP], [x1 - px*halfP, y1 - py*halfP],
+    [x2 + px*halfP, y2 + py*halfP], [x2 - px*halfP, y2 - py*halfP],
+  ];
+  const lx = Math.max(0, Math.floor(Math.min(...corners.map(c => c[0]))));
+  const ly = Math.max(0, Math.floor(Math.min(...corners.map(c => c[1]))));
+  const rx = Math.min(canvas.width,  Math.ceil(Math.max(...corners.map(c => c[0]))));
+  const ry = Math.min(canvas.height, Math.ceil(Math.max(...corners.map(c => c[1]))));
+  const lw = Math.max(1, rx - lx), lh = Math.max(1, ry - ly);
+
+  const d = ctx.getImageData(lx, ly, lw, lh).data;
+  const band = new Float32Array(ALONG_N * PERP_N);
+  let bi = 0;
+
+  for (let i = 0; i < ALONG_N; i++) {
+    const t  = i / (ALONG_N - 1);
+    const ax = x1 + dx * t, ay = y1 + dy * t;
+    for (let j = 0; j < PERP_N; j++) {
+      const off = j - PERP_N / 2;
+      const sx = Math.round(ax + px * off) - lx;
+      const sy = Math.round(ay + py * off) - ly;
+      const cx = Math.max(0, Math.min(lw-1, sx));
+      const cy = Math.max(0, Math.min(lh-1, sy));
+      const p  = (cy * lw + cx) * 4;
+      band[bi++] = 0.299*d[p] + 0.587*d[p+1] + 0.114*d[p+2];
+    }
+  }
+  return band;
+}
+
+// 92nd-percentile absolute diff:
+// immune to static background noise, sensitive to a partial crossing
+function peakDiff(a, b) {
+  const diffs = new Float32Array(a.length);
+  for (let i = 0; i < a.length; i++) diffs[i] = Math.abs(a[i] - b[i]);
+  diffs.sort();
+  return diffs[Math.floor(diffs.length * 0.92)];
+}
+
+// ── Bike filter helpers ───────────────────────────────────────────
+// Returns true if N sample points along the line fall inside the bbox
+// (with padding). Works for any line angle.
+function lineCrossesBox(line, bbox) {
+  const [bx, by, bw, bh] = bbox;
+  const pad = 18;
+  const N = 20;
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const x = line.x1 + (line.x2 - line.x1) * t;
+    const y = line.y1 + (line.y2 - line.y1) * t;
+    if (x >= bx - pad && x <= bx + bw + pad &&
+        y >= by - pad && y <= by + bh + pad) return true;
+  }
+  return false;
+}
+
+// Returns the first detection (bicycle or person) that straddles the finish line,
+// or null if none do. Minimum confidence: 40%.
+function bikeOnLine(line, detections) {
+  const CLASSES = new Set(['bicycle', 'person']);
+  for (const d of detections) {
+    if (!CLASSES.has(d.class)) continue;
+    if (d.score < 0.40) continue;
+    if (lineCrossesBox(line, d.bbox)) return d;
+  }
+  return null;
+}
+
+function checkCrossing() {
+  const line = state.finishLine;
+  const band = sampleBand(line);
+
+  if (state.prevBand !== null) {
+    const score = peakDiff(band, state.prevBand);
+    const now   = performance.now();
+
+    // Live motion meter
+    const pct = Math.min(100, (score / 80) * 100);
+    const bar  = document.getElementById('motion-bar');
+    bar.style.width      = pct + '%';
+    bar.style.background = score > state.threshold ? 'var(--accent2)' : 'var(--green)';
+    document.getElementById('motion-val').textContent = Math.round(score);
+
+    if (score > state.threshold && now > state.cooldownUntil) {
+      // ── Bike filter gate ────────────────────────────────────
+      if (state.bikeFilter && state.modelReady) {
+        const hit = bikeOnLine(line, state.lastDetections);
+        if (!hit) return;  // motion detected but no bike/person on line → skip
+      }
+      // ── Confirmed crossing ──────────────────────────────────
+      state.cooldownUntil = now + state.cooldownMs;
+      state.detectCount++;
+      detectCount.textContent = state.detectCount;
+      triggerFlash();
+      captureAndOcr(line);
+    }
+  }
+
+  state.prevBand = band;
+}
+
+// ── Capture + OCR ─────────────────────────────────────────────────
+function captureAndOcr(line) {
+  // Finish-line coords live in canvas-pixel space (max 1280×720).
+  // For captures we scale them back up to native video resolution so
+  // the thumbnail and OCR image are always at full source quality.
+  const scaleX = video.videoWidth  / canvas.width;
+  const scaleY = video.videoHeight / canvas.height;
+
+  // Crop rect in canvas-pixel space, centred on the line midpoint
+  const cx = (line.x1 + line.x2) / 2;
+  const cy = (line.y1 + line.y2) / 2;
+  const halfW = Math.max(200, Math.abs(line.x2 - line.x1) / 2 + 160);
+  const halfH = Math.max(130, Math.abs(line.y2 - line.y1) / 2 + 130);
+
+  const rx = Math.max(0, Math.round(cx - halfW));
+  const ry = Math.max(0, Math.round(cy - halfH));
+  const rw = Math.min(canvas.width  - rx, Math.round(halfW * 2));
+  const rh = Math.min(canvas.height - ry, Math.round(halfH * 2));
+
+  // Native-resolution equivalents
+  const nrx = Math.round(rx * scaleX);
+  const nry = Math.round(ry * scaleY);
+  const nrw = Math.min(video.videoWidth  - nrx, Math.round(rw * scaleX));
+  const nrh = Math.min(video.videoHeight - nry, Math.round(rh * scaleY));
+
+  // ── Thumbnail: native-res video crop (no finish-line overlay) ──
+  const thumbCanvas = document.createElement('canvas');
+  thumbCanvas.width  = nrw;
+  thumbCanvas.height = nrh;
+  thumbCanvas.getContext('2d').drawImage(
+    video, nrx, nry, nrw, nrh, 0, 0, nrw, nrh
+  );
+  const thumbDataUrl = thumbCanvas.toDataURL('image/jpeg', 0.92);
+
+  const rank      = state.detectCount;
+  const timestamp = formatTimestamp(video.currentTime);
+  const entryId   = addLogEntry(rank, timestamp, thumbDataUrl, null, 0, true);
+
+  if (!state.ocrReady || !state.ocrWorker) {
+    updateLogEntry(entryId, '—', 0);
+    return;
+  }
+
+  // ── OCR: native-res crop, greyscale + contrast boost (no upscale needed) ──
+  const procCanvas = document.createElement('canvas');
+  procCanvas.width  = nrw;
+  procCanvas.height = nrh;
+  const pCtx = procCanvas.getContext('2d');
+  pCtx.filter = 'grayscale(1) contrast(2.2) brightness(1.1)';
+  pCtx.drawImage(video, nrx, nry, nrw, nrh, 0, 0, nrw, nrh);
+
+  ocrStatus.textContent = 'OCR: reading…';
+  procCanvas.toBlob(async blob => {
+    try {
+      const { data } = await state.ocrWorker.recognize(blob);
+      const raw = data.text.trim();
+      const matches = raw.match(/\d+/g) || [];
+      const bib  = matches.length ? matches.sort((a, b) => b.length - a.length)[0] : null;
+      const conf = Math.round(data.confidence);
+      updateLogEntry(entryId, bib, conf, raw.replace(/\s+/g, ' ').slice(0, 40));
+      ocrStatus.textContent = '';
+    } catch (err) {
+      updateLogEntry(entryId, null, 0);
+      ocrStatus.textContent = 'OCR error';
+      setTimeout(() => { ocrStatus.textContent = ''; }, 2000);
+    }
+  }, 'image/png');
+}
+
+// ── Log management ────────────────────────────────────────────────
+let entryIdCounter = 0;
+
+function addLogEntry(rank, timestamp, thumbDataUrl, bib, conf, pending) {
+  const id = ++entryIdCounter;
+
+  // Remove placeholder text on first entry
+  if (state.entries.length === 0) logList.innerHTML = '';
+
+  const entry = document.createElement('div');
+  entry.className = 'log-entry' + (pending ? ' pending' : '');
+  entry.dataset.entryId = id;
+
+  const img = document.createElement('img');
+  img.className = 'log-thumb';
+  img.src = thumbDataUrl;
+  img.alt = 'crossing';
+  img.dataset.rank = rank;
+  img.dataset.ts   = timestamp;
+
+  const info = document.createElement('div');
+  info.className = 'log-info';
+  info.innerHTML = `
+    <div class="log-rank">#${rank} &nbsp; ${timestamp}</div>
+    <div class="log-bib ${pending ? 'processing' : bib ? '' : 'unknown'}" data-bib>
+      ${pending ? 'Reading OCR…' : (bib ?? '???')}
+    </div>
+    <div class="log-conf" data-conf>${pending ? '' : `conf: ${conf}%`}</div>
+  `;
+
+  entry.appendChild(img);
+  entry.appendChild(info);
+  logList.insertBefore(entry, logList.firstChild);
+
+  state.entries.push({ id, rank, timestamp });
+  return id;
+}
+
+function updateLogEntry(id, bib, conf, rawText) {
+  const entry = logList.querySelector(`[data-entry-id="${id}"]`);
+  if (!entry) return;
+  entry.classList.remove('pending');
+  const bibEl  = entry.querySelector('[data-bib]');
+  const confEl = entry.querySelector('[data-conf]');
+  if (bibEl) {
+    bibEl.textContent = bib ?? '???';
+    bibEl.className = 'log-bib' + (bib ? '' : ' unknown');
+  }
+  if (confEl) {
+    confEl.textContent = bib
+      ? `conf: ${conf}%`
+      : (rawText ? `raw: "${rawText.slice(0,30)}"` : 'no digits read');
+  }
+}
+
+document.getElementById('btn-clear-log').addEventListener('click', () => {
+  logList.innerHTML = `<div style="color:var(--muted);font-size:.8rem;text-align:center;margin-top:24px;line-height:1.7;">
+    Draw a finish line on the video,<br>then press <strong>▶ Start</strong>.<br><br>
+    Crossings will appear here.
+  </div>`;
+  state.entries = [];
+  state.detectCount = 0;
+  detectCount.textContent = 0;
+  entryIdCounter = 0;
+});
+
+// ── Drawing helpers ───────────────────────────────────────────────
+function drawOverlay() {
+  if (!state.finishLine) return;
+  const { x1, y1, x2, y2 } = state.finishLine;
+
+  // Glow shadow
+  ctx.save();
+  ctx.shadowColor = 'rgba(240,192,74,.7)';
+  ctx.shadowBlur = 10;
+  drawLine(x1, y1, x2, y2, '#f0c04a', 2.5);
+  ctx.restore();
+
+  // End-point circles
+  ctx.fillStyle = '#f0c04a';
+  [{ x: x1, y: y1 }, { x: x2, y: y2 }].forEach(p => {
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, 5, 0, Math.PI * 2);
+    ctx.fill();
+  });
+
+  // Label
+  const mx = (x1 + x2) / 2;
+  const my = (y1 + y2) / 2;
+  ctx.font = 'bold 13px ' + getComputedStyle(document.body).fontFamily;
+  ctx.fillStyle = 'rgba(0,0,0,.6)';
+  ctx.fillText('FINISH', mx + 1, my - 9);
+  ctx.fillStyle = '#f0c04a';
+  ctx.fillText('FINISH', mx, my - 10);
+
+  // ── Draw COCO-SSD detection boxes ────────────────────────────
+  const COLORS = { bicycle: '#4cddff', person: '#c084fc' };
+  for (const d of state.lastDetections) {
+    const color = COLORS[d.class];
+    if (!color || d.score < 0.35) continue;
+    const [bx, by, bw, bh] = d.bbox;
+    const onLine = lineCrossesBox(state.finishLine, d.bbox);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = onLine ? 2.5 : 1.5;
+    ctx.globalAlpha = onLine ? 1 : 0.5;
+    ctx.setLineDash(onLine ? [] : [4, 3]);
+    ctx.strokeRect(bx, by, bw, bh);
+    // Label
+    const label = `${d.class} ${Math.round(d.score * 100)}%`;
+    ctx.font = 'bold 11px ' + getComputedStyle(document.body).fontFamily;
+    const lw = ctx.measureText(label).width + 6;
+    ctx.globalAlpha = onLine ? .8 : .4;
+    ctx.fillStyle = color;
+    ctx.fillRect(bx, by - 16, lw, 16);
+    ctx.globalAlpha = 1;
+    ctx.fillStyle = '#000';
+    ctx.fillText(label, bx + 3, by - 3);
+    ctx.restore();
+  }
+}
+
+function drawLine(x1, y1, x2, y2, color, width = 2, dash = []) {
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = width;
+  ctx.setLineDash(dash);
+  ctx.beginPath();
+  ctx.moveTo(x1, y1);
+  ctx.lineTo(x2, y2);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function redrawStatic() {
+  // Redraw last paused frame + overlay (when not running)
+  if (!state.isRunning && !video.paused) return;
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  drawOverlay();
+}
+
+// ── Flash ─────────────────────────────────────────────────────────
+function triggerFlash() {
+  flash.classList.add('active');
+  requestAnimationFrame(() => {
+    setTimeout(() => flash.classList.remove('active'), 120);
+  });
+}
+
+// ── Sliders ───────────────────────────────────────────────────────
+document.getElementById('threshold-slider').addEventListener('input', e => {
+  state.threshold = +e.target.value;
+  document.getElementById('threshold-val').textContent = e.target.value;
+});
+document.getElementById('cooldown-slider').addEventListener('input', e => {
+  state.cooldownMs = +e.target.value;
+  document.getElementById('cooldown-val').textContent = (e.target.value / 1000).toFixed(1) + 's';
+});
+
+document.getElementById('btn-bike-filter').addEventListener('click', () => {
+  state.bikeFilter = !state.bikeFilter;
+  const btn = document.getElementById('btn-bike-filter');
+  btn.classList.toggle('active', state.bikeFilter);
+  btn.title = state.bikeFilter
+    ? 'Only trigger when a bicycle or person is detected on the finish line'
+    : 'Bike filter OFF — any motion triggers (no ML)';
+});
+
+// ── Status helpers ────────────────────────────────────────────────
+function setStatus(s) {
+  statusText.textContent = s;
+  runDot.className = 'dot' + (s === 'running' ? ' running' : s === 'idle' ? ' drawing' : '');
+}
+
+function formatTimestamp(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  const ms = Math.round((s % 1) * 1000);
+  return (h > 0 ? String(h).padStart(2,'0') + ':' : '')
+       + String(m).padStart(2,'0') + ':'
+       + String(Math.floor(s)).padStart(2,'0') + '.'
+       + String(ms).padStart(3,'0');
+}
+
+// ── Lightbox ──────────────────────────────────────────────────────
+const lightbox      = document.getElementById('lightbox');
+const lightboxImg   = document.getElementById('lightbox-img');
+const lightboxMeta  = document.getElementById('lightbox-meta');
+
+function openLightbox(src, rank, ts) {
+  lightboxImg.src   = src;
+  lightboxMeta.textContent = `#${rank}  ·  ${ts}`;
+  lightbox.classList.add('open');
+}
+
+function closeLightbox() {
+  lightbox.classList.remove('open');
+  lightboxImg.src = '';
+}
+
+// Delegate click — works for entries added dynamically
+logList.addEventListener('click', e => {
+  const thumb = e.target.closest('.log-thumb');
+  if (!thumb) return;
+  openLightbox(thumb.src, thumb.dataset.rank, thumb.dataset.ts);
+});
+
+document.getElementById('lightbox-close').addEventListener('click', closeLightbox);
+lightbox.addEventListener('click', e => { if (e.target === lightbox) closeLightbox(); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeLightbox(); });
+
+// ── Responsive redraw on panel resize ────────────────────────────
+// The canvas buffer (intrinsic pixels) never changes — only its CSS
+// display size changes, which the browser handles automatically.
+// We just need to repaint the current frame + overlay on resize so the
+// finish line label and highlight stay sharp.
+new ResizeObserver(() => {
+  if (canvas.style.display === 'none') return;
+  if (state.isRunning) return;  // loop is already painting every frame
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  drawOverlay();
+}).observe(document.getElementById('canvas-panel'));
+</script>
+</body>
+</html>

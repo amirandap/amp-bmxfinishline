@@ -1,0 +1,31 @@
+version: "3.9"
+
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./config.yaml:/app/config.yaml:ro
+    environment:
+      - FINISHLINE_CONFIG=config.yaml
+    # Uncomment and set DATABASE_URL to use Postgres instead of SQLite:
+    # environment:
+    #   - DATABASE_URL=postgresql://finishline:finishline@postgres:5432/finishline
+    depends_on: []
+
+  # Optional Postgres service – uncomment to use
+  # postgres:
+  #   image: postgres:16-alpine
+  #   environment:
+  #     POSTGRES_USER: finishline
+  #     POSTGRES_PASSWORD: finishline
+  #     POSTGRES_DB: finishline
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - pgdata:/var/lib/postgresql/data
+
+# volumes:
+#   pgdata:

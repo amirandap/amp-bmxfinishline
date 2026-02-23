@@ -1,0 +1,193 @@
+"""OCR bib extraction and confidence-weighted fusion."""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass
+
+import cv2
+import numpy as np
+
+from app.config import OcrConfig
+from app.core.ingest import Frame
+from app.core.types import Detection
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class OcrCandidate:
+    bib: str
+    score: float
+
+
+@dataclass
+class OcrResult:
+    bib: str | None
+    confidence: float
+    candidates: list[dict]  # [{bib: str, score: float}, ...]
+
+
+# ── OCR engine abstraction ──────────────────────────────────────────
+
+class _OcrEngine:
+    """Thin wrapper around PaddleOCR / EasyOCR."""
+
+    def __init__(self, engine: str):
+        self._engine_name = engine
+        self._engine = None
+
+    def _lazy_init(self):
+        if self._engine is not None:
+            return
+        if self._engine_name == "paddleocr":
+            from paddleocr import PaddleOCR
+            self._engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+        elif self._engine_name == "easyocr":
+            import easyocr
+            self._engine = easyocr.Reader(["en"], gpu=False)
+        else:
+            raise ValueError(f"Unknown OCR engine: {self._engine_name}")
+
+    def read(self, image: np.ndarray) -> list[tuple[str, float]]:
+        """Return list of (text, confidence) from the image."""
+        self._lazy_init()
+        results: list[tuple[str, float]] = []
+        if self._engine_name == "paddleocr":
+            out = self._engine.ocr(image, cls=False)
+            if out and out[0]:
+                for line in out[0]:
+                    text = line[1][0]
+                    conf = float(line[1][1])
+                    results.append((text, conf))
+        elif self._engine_name == "easyocr":
+            out = self._engine.readtext(image)
+            for (_, text, conf) in out:
+                results.append((text, float(conf)))
+        return results
+
+
+_ocr_engine: _OcrEngine | None = None
+
+
+def get_ocr_engine(engine: str = "paddleocr") -> _OcrEngine:
+    global _ocr_engine
+    if _ocr_engine is None or _ocr_engine._engine_name != engine:
+        _ocr_engine = _OcrEngine(engine)
+    return _ocr_engine
+
+
+# ── Crop helpers ────────────────────────────────────────────────────
+
+def _crop_reading_zone(
+    frame: np.ndarray,
+    reading_zone: list[list[float]] | None,
+    detection: Detection,
+    zoom_scale: float,
+) -> np.ndarray:
+    """Crop the bib region from a frame."""
+    h, w = frame.shape[:2]
+
+    if reading_zone and len(reading_zone) >= 3:
+        # Use reading zone polygon bounding rect
+        pts = np.array(reading_zone, dtype=np.int32)
+        rx, ry, rw, rh = cv2.boundingRect(pts)
+        crop = frame[max(0, ry):min(h, ry + rh), max(0, rx):min(w, rx + rw)]
+    else:
+        # Heuristic: front/lower-middle of the rider bbox
+        bx1, by1, bx2, by2 = int(detection.x1), int(detection.y1), int(detection.x2), int(detection.y2)
+        bw = bx2 - bx1
+        bh = by2 - by1
+        # Bib is typically on the upper-middle torso area
+        # Use the middle horizontal third, upper 40% of bbox
+        cx1 = bx1 + bw // 4
+        cx2 = bx2 - bw // 4
+        cy1 = by1 + int(bh * 0.15)
+        cy2 = by1 + int(bh * 0.55)
+        cx1, cy1 = max(0, cx1), max(0, cy1)
+        cx2, cy2 = min(w, cx2), min(h, cy2)
+        crop = frame[cy1:cy2, cx1:cx2]
+
+    if crop.size == 0:
+        return crop
+
+    # Digital zoom
+    if zoom_scale > 1.0:
+        new_w = int(crop.shape[1] * zoom_scale)
+        new_h = int(crop.shape[0] * zoom_scale)
+        crop = cv2.resize(crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+    return crop
+
+
+def _filter_digits(text: str, max_digits: int) -> str | None:
+    """Extract 1-max_digits digit string from OCR text."""
+    digits = re.sub(r"[^0-9]", "", text)
+    if 1 <= len(digits) <= max_digits:
+        return digits
+    if len(digits) > max_digits:
+        return digits[:max_digits]
+    return None
+
+
+# ── Fusion: confidence-weighted voting ──────────────────────────────
+
+def fuse_readings(readings: list[tuple[str, float]], top_n: int = 3) -> OcrResult:
+    """Fuse multiple OCR readings into a final bib via weighted voting.
+
+    *readings* is [(bib_string, confidence), ...].
+    """
+    if not readings:
+        return OcrResult(bib=None, confidence=0.0, candidates=[])
+
+    scores: dict[str, float] = {}
+    counts: dict[str, int] = {}
+    for bib, conf in readings:
+        scores[bib] = scores.get(bib, 0.0) + conf
+        counts[bib] = counts.get(bib, 0) + 1
+
+    # Normalise by number of readings to get average confidence
+    avg_scores = {bib: scores[bib] / counts[bib] for bib in scores}
+
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    candidates = [{"bib": b, "score": round(s, 4)} for b, s in ranked[:top_n]]
+
+    best_bib, best_total = ranked[0]
+    best_conf = avg_scores[best_bib]
+
+    return OcrResult(bib=best_bib, confidence=round(best_conf, 4), candidates=candidates)
+
+
+# ── Main entry point ────────────────────────────────────────────────
+
+def extract_bib(
+    burst_frames: list[Frame],
+    detection: Detection,
+    cfg: OcrConfig,
+    reading_zone: list[list[float]] | None = None,
+) -> OcrResult:
+    """Run OCR on burst frames and return fused bib result."""
+    engine = get_ocr_engine(cfg.engine)
+    readings: list[tuple[str, float]] = []
+
+    for bf in burst_frames:
+        crop = _crop_reading_zone(bf.image, reading_zone, detection, cfg.zoom_scale)
+        if crop.size == 0:
+            continue
+        try:
+            ocr_out = engine.read(crop)
+        except Exception as e:
+            logger.warning("OCR error on frame %d: %s", bf.index, e)
+            continue
+        for text, conf in ocr_out:
+            bib_str = _filter_digits(text, cfg.max_digits)
+            if bib_str:
+                readings.append((bib_str, conf))
+
+    result = fuse_readings(readings)
+    logger.info(
+        "OCR result  bib=%s  conf=%.3f  readings=%d  candidates=%s",
+        result.bib, result.confidence, len(readings), result.candidates,
+    )
+    return result

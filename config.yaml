@@ -1,0 +1,61 @@
+# ─── Grassroot Finishline Backend – Default Configuration ───
+# Override any value with env vars prefixed FINISHLINE_
+# e.g. FINISHLINE_YOLO_MODEL=yolov8s.pt
+
+database:
+  url: "sqlite:///data/finishline.db"   # or postgres://user:pass@host/db
+
+yolo:
+  # Recommended model progression:
+  #   yolov8n.pt   – fastest, lowest accuracy (default for dev)
+  #   yolov8s.pt   – good balance for race footage
+  #   rtdetr-l.pt  – RT-DETRv2 via ultralytics, best accuracy, real-time capable
+  #   rtdetr-x.pt  – full RT-DETRv2, highest accuracy, needs GPU
+  model: "yolov8n.pt"
+  confidence: 0.40              # detection confidence threshold
+  iou: 0.45                     # NMS IoU threshold
+  # COCO class IDs: 0=person, 1=bicycle
+  # Include bicycle (1) so the bike bbox bottom-center acts as a front-wheel proxy
+  classes: [0, 1]
+  device: ""                    # "" = auto (CPU/GPU)
+
+tracker:
+  type: "bytetrack"             # bytetrack or botsort
+  track_high_thresh: 0.5
+  track_low_thresh: 0.1
+  new_track_thresh: 0.6
+  track_buffer: 30
+  match_thresh: 0.8
+
+crossing:
+  cooldown_seconds: 2.0         # min gap between two finish events (global throttle)
+  # Direction filter – prevents false crossings from riders/marshals walking back.
+  # "any"        – both directions (safest for initial setup / calibration)
+  # "pos_to_neg" – rider crosses from positive (left) side to negative (right)
+  # "neg_to_pos" – rider crosses from negative (right) side to positive (left)
+  # Tip: run with "any" first, inspect which direction your finish produces,
+  #      then lock it in.
+  crossing_direction: "any"
+  # Reference point on the detection box used to measure crossing distance.
+  # "bottom_center" – foot / tyre contact point (default, good for side-on camera)
+  # "center"        – centre of bounding box
+  # "front_right"   – bottom-right corner (riders moving left→right)
+  # "front_left"    – bottom-left corner  (riders moving right→left)
+  crossing_point: "bottom_center"
+  # Linear sub-frame interpolation: refines the crossing timestamp to
+  # sub-frame precision using the ratio of side distances.
+  # Reduces timing error from ±(1 frame) to near-zero for steady motion.
+  interpolate_timestamp: true
+
+burst:
+  frames_before: 10
+  frames_after: 10
+
+ocr:
+  engine: "paddleocr"           # paddleocr | easyocr
+  confidence_threshold: 0.55    # below this → NEEDS_REVIEW
+  zoom_scale: 2.0               # digital zoom factor for OCR crop
+  max_digits: 3
+
+output:
+  base_dir: "data/outputs"

@@ -1,0 +1,1 @@
+"""Core package – processing modules."""
