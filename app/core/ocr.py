@@ -153,9 +153,26 @@ def _crop_reading_zone(
     return crop
 
 
+_DIGIT_SUBS: dict[str, str] = {
+    "S": "5", "s": "5",
+    "O": "0", "o": "0",
+    "I": "1", "l": "1",
+    "Z": "2",
+    "B": "8",
+    "G": "6",
+    "g": "9", "q": "9",
+}
+
+
+def _normalize_ocr(text: str) -> str:
+    """Replace common OCR letter-for-digit misreads before digit filtering."""
+    return "".join(_DIGIT_SUBS.get(c, c) for c in text)
+
+
 def _filter_digits(text: str, max_digits: int) -> str | None:
-    """Extract 1-max_digits digit string from OCR text."""
-    digits = re.sub(r"[^0-9]", "", text)
+    """Extract 1-max_digits digit string from OCR text, after normalizing lookalikes."""
+    normalized = _normalize_ocr(text)
+    digits = re.sub(r"[^0-9]", "", normalized)
     if 1 <= len(digits) <= max_digits:
         return digits
     if len(digits) > max_digits:
