@@ -438,6 +438,9 @@ const state = {
   // ── Best-frame burst capture ────────────────────────────────
   frameBuffer: [],         // rolling buffer of last N pre-crossing crops
   burstSession: null,      // active burst: {entryId,rank,ts,frames,endsAt}
+  // ── Live canvas annotations ─────────────────────────────────
+  liveBib: null,           // most recently OCR-read bib (shown on canvas)
+  liveBibTs: 0,            // performance.now() when liveBib was set
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────
@@ -1031,7 +1034,7 @@ async function processBurst(burst) {
   const sorted = frames.slice().sort((a, b) => b.sharpness - a.sharpness);
 
   // Update thumbnail immediately to sharpest frame found
-  updateLogThumb(entryId, sorted[0].dataUrl);
+  updateLogThumb(entryId, sorted[0].cropCanvas.toDataURL('image/jpeg', 0.92));
 
   // Run OCR on the top 3 sharpest frames concurrently
   ocrStatus.textContent = 'OCR: best frame…';
@@ -1225,32 +1228,85 @@ function drawOverlay() {
   ctx.fillStyle = '#f0c04a';
   ctx.fillText('FINISH', mx, my - 10);
 
-  // ── Draw COCO-SSD detection boxes ────────────────────────────
-  const COLORS = { bicycle: '#4cddff', person: '#c084fc' };
+  // ── Draw YOLOv8 detection boxes ─────────────────────────────
+  const COLORS    = { bicycle: '#4cddff', person: '#c084fc' };
+  const FONT_FACE = getComputedStyle(document.body).fontFamily;
   for (const d of state.lastDetections) {
     const color = COLORS[d.class];
-    if (!color || d.score < 0.35) continue;
+    if (!color || d.score < 0.25) continue;
     const [bx, by, bw, bh] = d.bbox;
     const onLine = lineCrossesBox(state.finishLine, d.bbox);
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth   = onLine ? 2.5 : 1.5;
-    ctx.globalAlpha = onLine ? 1 : 0.5;
+    ctx.lineWidth   = onLine ? 3 : 1.5;
+    ctx.globalAlpha = onLine ? 1 : 0.55;
     ctx.setLineDash(onLine ? [] : [4, 3]);
     ctx.strokeRect(bx, by, bw, bh);
-    // Label
+    // Corner accent marks on "on-line" boxes
+    if (onLine) {
+      const cs = Math.min(bw, bh, 16);
+      ctx.lineWidth = 3; ctx.setLineDash([]);
+      for (const [cx, cy, sx, sy] of [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]]) {
+        ctx.beginPath(); ctx.moveTo(cx+sx*cs, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy+sy*cs); ctx.stroke();
+      }
+    }
+    // Label chip
     const label = `${d.class} ${Math.round(d.score * 100)}%`;
-    ctx.font = 'bold 11px ' + getComputedStyle(document.body).fontFamily;
-    const lw = ctx.measureText(label).width + 6;
-    ctx.globalAlpha = onLine ? .8 : .4;
-    ctx.fillStyle = color;
-    ctx.fillRect(bx, by - 16, lw, 16);
+    ctx.font = `bold 11px ${FONT_FACE}`;
+    const chipW = ctx.measureText(label).width + 8;
+    const chipY = by > 18 ? by - 17 : by + bh + 1;
+    ctx.globalAlpha = onLine ? 0.88 : 0.45;
+    ctx.fillStyle   = color;
+    ctx.beginPath();
+    ctx.roundRect(bx, chipY, chipW, 16, 3);
+    ctx.fill();
     ctx.globalAlpha = 1;
-    ctx.fillStyle = '#000';
-    ctx.fillText(label, bx + 3, by - 3);
+    ctx.fillStyle   = '#000';
+    ctx.fillText(label, bx + 4, chipY + 12);
     ctx.restore();
   }
-}
+
+  // ── Live OCR bib pill on canvas ───────────────────────────────
+  // Show the most recent OCR reading (fades after 2 s) near the midpoint.
+  const bibAge = performance.now() - state.liveBibTs;
+  if (state.liveBib && bibAge < 2000) {
+    const alpha  = Math.max(0, 1 - bibAge / 2000);
+    const FONT_FACE2 = getComputedStyle(document.body).fontFamily;
+    ctx.save();
+    ctx.font      = `bold 28px ${FONT_FACE2}`;
+    const bibText = state.liveBib;
+    const tw = ctx.measureText(bibText).width;
+    const px  = mx - tw / 2;
+    const py  = my + 22;                   // below the FINISH label
+    const pad = 10;
+    ctx.globalAlpha = alpha * 0.82;
+    ctx.fillStyle   = '#000';
+    ctx.beginPath();
+    ctx.roundRect(px - pad, py - 26, tw + pad*2, 34, 6);
+    ctx.fill();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle   = '#f0c04a';
+    ctx.fillText(bibText, px, py);
+    ctx.restore();
+  }
+
+  // ── Model-status badge (shown while YOLO is loading) ─────────
+  if (state.bikeFilter && !state.modelReady) {
+    ctx.save();
+    ctx.font        = 'bold 11px ' + getComputedStyle(document.body).fontFamily;
+    const msg       = '⏳ Loading YOLOv8…';
+    const bw2       = ctx.measureText(msg).width + 12;
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle   = '#1a1a2e';
+    ctx.beginPath();
+    ctx.roundRect(8, 8, bw2, 20, 4);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle   = '#f0c04a';
+    ctx.fillText(msg, 14, 23);
+    ctx.restore();
+  }
+}  // end drawOverlay
 
 function drawLine(x1, y1, x2, y2, color, width = 2, dash = []) {
   ctx.save();
