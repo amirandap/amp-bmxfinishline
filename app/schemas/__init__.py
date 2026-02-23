@@ -108,6 +108,7 @@ class ArrivalOut(BaseModel):
     burst_dir: Optional[str] = None
     merged_into: Optional[str] = None
     effective_position: Optional[int] = None
+    gallery_confidence: Optional[float] = None
 
     class Config:
         from_attributes = True

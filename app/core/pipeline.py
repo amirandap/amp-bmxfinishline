@@ -179,11 +179,31 @@ class ProcessingPipeline:
                 "Pipeline finished  frames=%d  arrivals=%d",
                 self._status.frames_processed, self._status.arrivals_detected,
             )
+            # Broadcast final status
+            try:
+                from app.api.ws import manager as ws_manager
+                ws_manager.broadcast_sync(self._race_id, {
+                    "type": "status",
+                    "state": "finished",
+                    "frames_processed": self._status.frames_processed,
+                    "arrivals_detected": self._status.arrivals_detected,
+                    "camera_moved": self._status.camera_moved,
+                })
+            except Exception:
+                pass
 
         except Exception as e:
             logger.exception("Pipeline error")
             self._status.state = "error"
             self._status.error = str(e)
+            try:
+                from app.api.ws import manager as ws_manager
+                ws_manager.broadcast_sync(self._race_id, {
+                    "type": "error",
+                    "message": str(e),
+                })
+            except Exception:
+                pass
         finally:
             if source:
                 source.release()
@@ -202,6 +222,7 @@ class ProcessingPipeline:
         """Process a single finish event: save burst, run OCR, persist arrival."""
         from app.core.burst import save_burst
         from app.core.ocr import extract_bib
+        from app.api.ws import manager as ws_manager
 
         # Save burst evidence
         crossing_path, burst_dir = save_burst(
@@ -230,6 +251,18 @@ class ProcessingPipeline:
         db.add(arrival)
         db.commit()
         self._status.arrivals_detected += 1
+
+        # Broadcast new arrival over WebSocket
+        ws_manager.broadcast_sync(self._race_id, {
+            "type": "arrival",
+            "id": arrival.id,
+            "bib": arrival.bib,
+            "confidence": arrival.confidence,
+            "position": position,
+            "timestamp_ms": arrival.timestamp_ms,
+            "status": arrival.status,
+        })
+
         logger.info(
             "Arrival persisted  id=%s  bib=%s  pos=%d  status=%s",
             arrival.id, arrival.bib, position, status,

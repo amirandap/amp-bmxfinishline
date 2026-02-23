@@ -46,6 +46,7 @@ def _to_out(a: Arrival) -> ArrivalOut:
         burst_dir=a.burst_dir,
         merged_into=a.merged_into,
         effective_position=_effective_position(a),
+        gallery_confidence=a.gallery_confidence,
     )
 
 

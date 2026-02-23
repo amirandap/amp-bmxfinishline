@@ -167,27 +167,49 @@ def extract_bib(
     cfg: OcrConfig,
     reading_zone: list[list[float]] | None = None,
 ) -> OcrResult:
-    """Run OCR on burst frames and return fused bib result."""
+    """Run OCR on burst frames at multiple scales and return fused bib result.
+
+    Each frame is cropped to the reading zone (or heuristic bib area), then
+    processed at ``cfg.zoom_scale`` *and* every scale in ``cfg.extra_scales``.
+    Readings from all scales are pooled before fusion, giving more signal for
+    the confidence-weighted vote.
+    """
     engine = get_ocr_engine(cfg.engine)
     readings: list[tuple[str, float]] = []
 
+    # Build the complete set of scales to try, deduplicated and sorted.
+    all_scales: list[float] = sorted(set([cfg.zoom_scale] + list(cfg.extra_scales)))
+
     for bf in burst_frames:
-        crop = _crop_reading_zone(bf.image, reading_zone, detection, cfg.zoom_scale)
-        if crop.size == 0:
+        # Base crop (zoom_scale = 1.0 pass – we override below per scale)
+        base_crop = _crop_reading_zone(bf.image, reading_zone, detection, 1.0)
+        if base_crop is None or base_crop.size == 0:
             continue
-        try:
-            ocr_out = engine.read(crop)
-        except Exception as e:
-            logger.warning("OCR error on frame %d: %s", bf.index, e)
-            continue
-        for text, conf in ocr_out:
-            bib_str = _filter_digits(text, cfg.max_digits)
-            if bib_str:
-                readings.append((bib_str, conf))
+
+        for scale in all_scales:
+            if scale <= 0:
+                logger.warning("Skipping invalid OCR scale %.2f (must be > 0)", scale)
+                continue
+            if scale != 1.0:
+                new_w = max(1, int(base_crop.shape[1] * scale))
+                new_h = max(1, int(base_crop.shape[0] * scale))
+                crop = cv2.resize(base_crop, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+            else:
+                crop = base_crop
+
+            try:
+                ocr_out = engine.read(crop)
+            except Exception as e:
+                logger.warning("OCR error frame=%d scale=%.1f: %s", bf.index, scale, e)
+                continue
+            for text, conf in ocr_out:
+                bib_str = _filter_digits(text, cfg.max_digits)
+                if bib_str:
+                    readings.append((bib_str, conf))
 
     result = fuse_readings(readings)
     logger.info(
-        "OCR result  bib=%s  conf=%.3f  readings=%d  candidates=%s",
-        result.bib, result.confidence, len(readings), result.candidates,
+        "OCR result  bib=%s  conf=%.3f  readings=%d  scales=%s  candidates=%s",
+        result.bib, result.confidence, len(readings), all_scales, result.candidates,
     )
     return result
