@@ -36,13 +36,17 @@ class Detector:
     def _build_tracker_yaml(cfg: AppConfig) -> str:
         import tempfile, yaml
 
+        tracker_type = cfg.tracker.type
         tracker_dict = {
-            "tracker_type": cfg.tracker.type,
+            "tracker_type": tracker_type,
             "track_high_thresh": cfg.tracker.track_high_thresh,
             "track_low_thresh": cfg.tracker.track_low_thresh,
             "new_track_thresh": cfg.tracker.new_track_thresh,
             "track_buffer": cfg.tracker.track_buffer,
             "match_thresh": cfg.tracker.match_thresh,
+            # Required by newer ultralytics versions regardless of tracker type
+            "fuse_score": tracker_type == "botsort",
+            "with_reid": False,  # disable re-id model unless explicitly needed
         }
         tmp = tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False)
         yaml.dump(tracker_dict, tmp)

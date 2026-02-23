@@ -52,7 +52,7 @@ burst:
   frames_after: 10
 
 ocr:
-  engine: "paddleocr"           # paddleocr | easyocr
+  engine: "easyocr"            # easyocr | paddleocr | tesseract
   confidence_threshold: 0.55    # below this → NEEDS_REVIEW
   zoom_scale: 2.0               # digital zoom factor for OCR crop
   max_digits: 3

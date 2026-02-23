@@ -42,11 +42,30 @@ class _OcrEngine:
         if self._engine is not None:
             return
         if self._engine_name == "paddleocr":
-            from paddleocr import PaddleOCR
-            self._engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+            try:
+                from paddleocr import PaddleOCR
+                self._engine = PaddleOCR(use_angle_cls=False, lang="en", show_log=False)
+            except ImportError:
+                logger.warning("paddleocr not installed; falling back to easyocr")
+                self._engine_name = "easyocr"
+                self._lazy_init()
         elif self._engine_name == "easyocr":
-            import easyocr
-            self._engine = easyocr.Reader(["en"], gpu=False)
+            try:
+                import easyocr
+                self._engine = easyocr.Reader(["en"], gpu=False, verbose=False)
+            except ImportError:
+                logger.warning("easyocr not installed; falling back to tesseract")
+                self._engine_name = "tesseract"
+                self._lazy_init()
+        elif self._engine_name == "tesseract":
+            try:
+                import pytesseract  # noqa: F401 – just verify it's importable
+                self._engine = "tesseract"
+            except ImportError:
+                raise RuntimeError(
+                    "No OCR engine available. "
+                    "Install one of: paddleocr, easyocr, or pytesseract."
+                )
         else:
             raise ValueError(f"Unknown OCR engine: {self._engine_name}")
 
@@ -65,6 +84,19 @@ class _OcrEngine:
             out = self._engine.readtext(image)
             for (_, text, conf) in out:
                 results.append((text, float(conf)))
+        elif self._engine_name == "tesseract":
+            import pytesseract
+            # PSM 7 = single line; PSM 6 = single block
+            for psm in (7, 6):
+                cfg = f"--oem 1 --psm {psm} -c tessedit_char_whitelist=0123456789"
+                text = pytesseract.image_to_string(image, config=cfg).strip()
+                data = pytesseract.image_to_data(
+                    image, config=cfg, output_type=pytesseract.Output.DICT
+                )
+                for t, c in zip(data["text"], data["conf"]):
+                    t = t.strip()
+                    if t and int(c) > 0:
+                        results.append((t, float(c) / 100.0))
         return results
 
 
