@@ -60,17 +60,17 @@ class AutoDetectIn(BaseModel):
         description="Expected finish-line orientation in the frame",
     )
     angle_thresh_deg: float = Field(
-        15.0, ge=1.0, le=45.0,
+        25.0, ge=1.0, le=45.0,
         description="Max deviation from target axis to consider a segment (degrees)",
     )
     expected_y_frac: List[float] = Field(
-        [0.2, 0.9],
+        [0.3, 0.95],
         min_length=2, max_length=2,
         description="[lo, hi] vertical band (0–1) where the finish line is expected",
     )
     roi_xywh: Optional[List[int]] = Field(
         None, min_length=4, max_length=4,
-        description="Crop region [x, y, w, h] in pixels; None = auto (right-60 %×bottom-60 %)",
+        description="Crop region [x, y, w, h] in pixels; None = auto (full-width × bottom-80 %)",
     )
     save: bool = Field(True, description="Persist the detected finish line to the race record")
 
@@ -108,6 +108,7 @@ class ArrivalOut(BaseModel):
     burst_dir: Optional[str] = None
     merged_into: Optional[str] = None
     effective_position: Optional[int] = None
+    gallery_confidence: Optional[float] = None
 
     class Config:
         from_attributes = True

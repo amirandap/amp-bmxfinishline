@@ -356,6 +356,14 @@
 
     <button id="btn-bike-filter" class="active" title="Only trigger when a bicycle or person is detected on the finish line">🚲 Bike filter</button>
     <span id="model-status">model: loading…</span>
+
+    <div class="sep"></div>
+
+    <input id="ws-url" type="text" placeholder="ws://localhost:8000/races/{id}/ws/log"
+      style="width:260px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;
+             padding:4px 8px;color:var(--text);font-size:.8rem;font-family:var(--mono);">
+    <button id="btn-ws-connect" title="Connect to backend WebSocket for live results">🔌 Connect</button>
+    <span id="ws-status" style="font-size:.75rem;color:var(--muted);font-family:var(--mono)">disconnected</span>
   </div>
 </header>
 
@@ -438,6 +446,9 @@ const state = {
   // ── Best-frame burst capture ────────────────────────────────
   frameBuffer: [],         // rolling buffer of last N pre-crossing crops
   burstSession: null,      // active burst: {entryId,rank,ts,frames,endsAt}
+  // ── Live canvas annotations ─────────────────────────────────
+  liveBib: null,           // most recently OCR-read bib (shown on canvas)
+  liveBibTs: 0,            // performance.now() when liveBib was set
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────
@@ -611,10 +622,18 @@ document.getElementById('video-input').addEventListener('change', e => {
     placeholder.style.display = 'none';
     canvas.style.display = 'block';
 
-    // Draw first frame
+    // Draw first frame, then auto-detect finish line
     video.currentTime = 0;
     video.addEventListener('seeked', () => {
       ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      // Auto-detect finish line from the first frame
+      const detected = autoDetectFinishLine(ctx, canvas.width, canvas.height);
+      if (detected) {
+        state.finishLine = detected;
+        state.prevBand = null;
+        setStatus('auto-detected finish line – adjust if needed');
+        setTimeout(() => setStatus('idle'), 3000);
+      }
       drawOverlay();
     }, { once: true });
 
@@ -625,7 +644,149 @@ document.getElementById('video-input').addEventListener('change', e => {
   }, { once: true });
 });
 
-// ── Finish line drawing ───────────────────────────────────────────
+// ── Auto finish-line detection (runs on the canvas pixel data) ────
+// Uses a Canny-like edge detection followed by probabilistic Hough
+// transform, all implemented in plain JavaScript on an OffscreenCanvas.
+function autoDetectFinishLine(srcCtx, W, H) {
+  // ── 1. Extract grayscale from the canvas ──────────────────────
+  const imgData = srcCtx.getImageData(0, 0, W, H);
+  const px = imgData.data; // RGBA
+
+  const gray = new Uint8Array(W * H);
+  for (let i = 0; i < W * H; i++) {
+    const r = px[i*4], g = px[i*4+1], b = px[i*4+2];
+    gray[i] = (r * 77 + g * 150 + b * 29) >> 8;
+  }
+
+  // ── 2. Gaussian blur (3×3 approx box) ────────────────────────
+  const blurred = new Uint8Array(W * H);
+  for (let y = 1; y < H-1; y++) {
+    for (let x = 1; x < W-1; x++) {
+      let s = 0;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++)
+          s += gray[(y+dy)*W + (x+dx)];
+      blurred[y*W+x] = (s / 9) | 0;
+    }
+  }
+
+  // ── 3. Sobel edge magnitude ───────────────────────────────────
+  const edges = new Uint8Array(W * H);
+  let maxMag = 1;
+  const mag = new Float32Array(W * H);
+  for (let y = 1; y < H-1; y++) {
+    for (let x = 1; x < W-1; x++) {
+      const gx = -blurred[(y-1)*W+(x-1)] + blurred[(y-1)*W+(x+1)]
+               - 2*blurred[y*W+(x-1)]   + 2*blurred[y*W+(x+1)]
+               - blurred[(y+1)*W+(x-1)] + blurred[(y+1)*W+(x+1)];
+      const gy = -blurred[(y-1)*W+(x-1)] - 2*blurred[(y-1)*W+x] - blurred[(y-1)*W+(x+1)]
+               + blurred[(y+1)*W+(x-1)] + 2*blurred[(y+1)*W+x] + blurred[(y+1)*W+(x+1)];
+      const m = Math.sqrt(gx*gx + gy*gy);
+      mag[y*W+x] = m;
+      if (m > maxMag) maxMag = m;
+    }
+  }
+  const threshold = maxMag * 0.15;
+  for (let i = 0; i < W*H; i++) edges[i] = mag[i] > threshold ? 255 : 0;
+
+  // ── 4. Hough transform (votes for near-vertical lines) ───────
+  // We look for near-vertical finish lines (like a side-on camera setup).
+  // Also try near-horizontal for overhead/track cameras.
+  const bestLine = _houghBestLine(edges, W, H);
+  return bestLine;
+}
+
+function _houghBestLine(edges, W, H) {
+  // Probabilistic Hough — look for the highest-voted angle near
+  // vertical (80–100°) or horizontal (−10–10°).
+  // Returns {x1,y1,x2,y2} in canvas coordinates, or null.
+
+  const RHOS   = Math.ceil(Math.sqrt(W*W + H*H));
+  const THETAS = 180; // 1° resolution
+  const acc    = new Int32Array(RHOS * THETAS);
+
+  // Precompute trig
+  const cosT = new Float32Array(THETAS);
+  const sinT = new Float32Array(THETAS);
+  for (let t = 0; t < THETAS; t++) {
+    const rad = (t - 90) * Math.PI / 180;
+    cosT[t] = Math.cos(rad);
+    sinT[t] = Math.sin(rad);
+  }
+
+  // Vote
+  for (let y = 1; y < H-1; y++) {
+    for (let x = 1; x < W-1; x++) {
+      if (!edges[y*W+x]) continue;
+      for (let t = 0; t < THETAS; t++) {
+        const rho = Math.round(x * cosT[t] + y * sinT[t]) + RHOS/2;
+        if (rho >= 0 && rho < RHOS) acc[rho*THETAS + t]++;
+      }
+    }
+  }
+
+  // Find best candidate in vertical band (t ≈ 0 → vertical line in frame)
+  // and horizontal band (t ≈ 90 → horizontal line)
+  let bestScore = 0, bestRho = 0, bestT = 0;
+  // prefer angles near 0° (vertical finish line from side-on camera)
+  // or 90° (horizontal stripe)
+  const BANDS = [[0, 20], [160, 180], [70, 110]]; // vertical or horizontal
+  const minLen = Math.min(W, H) * 0.35;
+
+  for (const [tLo, tHi] of BANDS) {
+    for (let t = tLo; t < tHi; t++) {
+      for (let r = 0; r < RHOS; r++) {
+        const v = acc[r*THETAS + t];
+        if (v > bestScore && v > minLen * 0.4) {
+          bestScore = v;
+          bestRho = r;
+          bestT = t;
+        }
+      }
+    }
+  }
+
+  if (bestScore < minLen * 0.25) return null; // no confident line found
+
+  // Convert (rho, theta) → two frame-edge intersection points
+  const rho = bestRho - RHOS/2;
+  const rad = (bestT - 90) * Math.PI / 180;
+  const ct = Math.cos(rad), st = Math.sin(rad);
+
+  // Collect all edge points near this line to find the actual extent
+  const tol = 3; // px tolerance from the line
+  const pts = [];
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      if (!edges[y*W+x]) continue;
+      const d = Math.abs(x * ct + y * st - rho);
+      if (d < tol) pts.push([x, y]);
+    }
+  }
+
+  if (pts.length < minLen * 0.3) return null;
+
+  // Project onto the line direction and find extent
+  const perpX = -st, perpY = ct; // unit vector along the line
+  const projs = pts.map(([x,y]) => x*perpX + y*perpY);
+  const pMin = Math.min(...projs), pMax = Math.max(...projs);
+
+  const cx = rho * ct, cy = rho * st; // closest point to origin on line
+  const x1 = cx + pMin * perpX;
+  const y1 = cy + pMin * perpY;
+  const x2 = cx + pMax * perpX;
+  const y2 = cy + pMax * perpY;
+
+  // Clamp to canvas bounds
+  return {
+    x1: Math.max(0, Math.min(W, x1)),
+    y1: Math.max(0, Math.min(H, y1)),
+    x2: Math.max(0, Math.min(W, x2)),
+    y2: Math.max(0, Math.min(H, y2)),
+  };
+}
+
+
 document.getElementById('btn-draw').addEventListener('click', () => {
   state.isDrawing = !state.isDrawing;
   document.getElementById('btn-draw').classList.toggle('active', state.isDrawing);
@@ -1031,7 +1192,7 @@ async function processBurst(burst) {
   const sorted = frames.slice().sort((a, b) => b.sharpness - a.sharpness);
 
   // Update thumbnail immediately to sharpest frame found
-  updateLogThumb(entryId, sorted[0].dataUrl);
+  updateLogThumb(entryId, sorted[0].cropCanvas.toDataURL('image/jpeg', 0.92));
 
   // Run OCR on the top 3 sharpest frames concurrently
   ocrStatus.textContent = 'OCR: best frame…';
@@ -1225,32 +1386,85 @@ function drawOverlay() {
   ctx.fillStyle = '#f0c04a';
   ctx.fillText('FINISH', mx, my - 10);
 
-  // ── Draw COCO-SSD detection boxes ────────────────────────────
-  const COLORS = { bicycle: '#4cddff', person: '#c084fc' };
+  // ── Draw YOLOv8 detection boxes ─────────────────────────────
+  const COLORS    = { bicycle: '#4cddff', person: '#c084fc' };
+  const FONT_FACE = getComputedStyle(document.body).fontFamily;
   for (const d of state.lastDetections) {
     const color = COLORS[d.class];
-    if (!color || d.score < 0.35) continue;
+    if (!color || d.score < 0.25) continue;
     const [bx, by, bw, bh] = d.bbox;
     const onLine = lineCrossesBox(state.finishLine, d.bbox);
     ctx.save();
     ctx.strokeStyle = color;
-    ctx.lineWidth   = onLine ? 2.5 : 1.5;
-    ctx.globalAlpha = onLine ? 1 : 0.5;
+    ctx.lineWidth   = onLine ? 3 : 1.5;
+    ctx.globalAlpha = onLine ? 1 : 0.55;
     ctx.setLineDash(onLine ? [] : [4, 3]);
     ctx.strokeRect(bx, by, bw, bh);
-    // Label
+    // Corner accent marks on "on-line" boxes
+    if (onLine) {
+      const cs = Math.min(bw, bh, 16);
+      ctx.lineWidth = 3; ctx.setLineDash([]);
+      for (const [cx, cy, sx, sy] of [[bx,by,1,1],[bx+bw,by,-1,1],[bx,by+bh,1,-1],[bx+bw,by+bh,-1,-1]]) {
+        ctx.beginPath(); ctx.moveTo(cx+sx*cs, cy); ctx.lineTo(cx, cy); ctx.lineTo(cx, cy+sy*cs); ctx.stroke();
+      }
+    }
+    // Label chip
     const label = `${d.class} ${Math.round(d.score * 100)}%`;
-    ctx.font = 'bold 11px ' + getComputedStyle(document.body).fontFamily;
-    const lw = ctx.measureText(label).width + 6;
-    ctx.globalAlpha = onLine ? .8 : .4;
-    ctx.fillStyle = color;
-    ctx.fillRect(bx, by - 16, lw, 16);
+    ctx.font = `bold 11px ${FONT_FACE}`;
+    const chipW = ctx.measureText(label).width + 8;
+    const chipY = by > 18 ? by - 17 : by + bh + 1;
+    ctx.globalAlpha = onLine ? 0.88 : 0.45;
+    ctx.fillStyle   = color;
+    ctx.beginPath();
+    ctx.roundRect(bx, chipY, chipW, 16, 3);
+    ctx.fill();
     ctx.globalAlpha = 1;
-    ctx.fillStyle = '#000';
-    ctx.fillText(label, bx + 3, by - 3);
+    ctx.fillStyle   = '#000';
+    ctx.fillText(label, bx + 4, chipY + 12);
     ctx.restore();
   }
-}
+
+  // ── Live OCR bib pill on canvas ───────────────────────────────
+  // Show the most recent OCR reading (fades after 2 s) near the midpoint.
+  const bibAge = performance.now() - state.liveBibTs;
+  if (state.liveBib && bibAge < 2000) {
+    const alpha  = Math.max(0, 1 - bibAge / 2000);
+    const FONT_FACE2 = getComputedStyle(document.body).fontFamily;
+    ctx.save();
+    ctx.font      = `bold 28px ${FONT_FACE2}`;
+    const bibText = state.liveBib;
+    const tw = ctx.measureText(bibText).width;
+    const px  = mx - tw / 2;
+    const py  = my + 22;                   // below the FINISH label
+    const pad = 10;
+    ctx.globalAlpha = alpha * 0.82;
+    ctx.fillStyle   = '#000';
+    ctx.beginPath();
+    ctx.roundRect(px - pad, py - 26, tw + pad*2, 34, 6);
+    ctx.fill();
+    ctx.globalAlpha = alpha;
+    ctx.fillStyle   = '#f0c04a';
+    ctx.fillText(bibText, px, py);
+    ctx.restore();
+  }
+
+  // ── Model-status badge (shown while YOLO is loading) ─────────
+  if (state.bikeFilter && !state.modelReady) {
+    ctx.save();
+    ctx.font        = 'bold 11px ' + getComputedStyle(document.body).fontFamily;
+    const msg       = '⏳ Loading YOLOv8…';
+    const bw2       = ctx.measureText(msg).width + 12;
+    ctx.globalAlpha = 0.75;
+    ctx.fillStyle   = '#1a1a2e';
+    ctx.beginPath();
+    ctx.roundRect(8, 8, bw2, 20, 4);
+    ctx.fill();
+    ctx.globalAlpha = 1;
+    ctx.fillStyle   = '#f0c04a';
+    ctx.fillText(msg, 14, 23);
+    ctx.restore();
+  }
+}  // end drawOverlay
 
 function drawLine(x1, y1, x2, y2, color, width = 2, dash = []) {
   ctx.save();
@@ -1353,6 +1567,104 @@ new ResizeObserver(() => {
   ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
   drawOverlay();
 }).observe(document.getElementById('canvas-panel'));
+
+// ── Backend WebSocket connection ──────────────────────────────────
+// Connects to the backend's live log stream and surfaces arrivals
+// directly in the demo log panel (same entries as local browser detections).
+let _ws = null;
+let _wsReconnectTimer = null;
+
+function wsSetStatus(msg, color) {
+  const el = document.getElementById('ws-status');
+  if (el) { el.textContent = msg; el.style.color = color || 'var(--muted)'; }
+}
+
+function wsConnect() {
+  const urlInput = document.getElementById('ws-url');
+  const url = urlInput ? urlInput.value.trim() : '';
+  if (!url) { wsSetStatus('enter URL first', 'var(--accent2)'); return; }
+
+  if (_ws) { _ws.close(); _ws = null; }
+  clearTimeout(_wsReconnectTimer);
+
+  wsSetStatus('connecting…', 'var(--accent)');
+  try {
+    _ws = new WebSocket(url);
+  } catch (e) {
+    wsSetStatus('invalid URL', 'var(--accent2)');
+    return;
+  }
+
+  _ws.onopen = () => {
+    wsSetStatus('● connected', 'var(--green)');
+    // Send a ping every 25s to keep the connection alive
+    _ws._pingInterval = setInterval(() => {
+      if (_ws && _ws.readyState === WebSocket.OPEN) _ws.send('ping');
+    }, 25000);
+  };
+
+  _ws.onclose = () => {
+    wsSetStatus('disconnected', 'var(--muted)');
+    clearInterval(_ws && _ws._pingInterval);
+    _ws = null;
+    // Auto-reconnect after 5 s if the user hadn't manually disconnected
+    _wsReconnectTimer = setTimeout(() => {
+      if (document.getElementById('ws-status').textContent === 'disconnected')
+        wsConnect();
+    }, 5000);
+  };
+
+  _ws.onerror = () => wsSetStatus('error', 'var(--accent2)');
+
+  _ws.onmessage = e => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+
+    if (msg.type === 'arrival') {
+      // Add a log entry from the backend arrival event
+      const rank = msg.position || (state.entries.length + 1);
+      const ts   = msg.timestamp_ms != null
+        ? formatTimestamp(msg.timestamp_ms / 1000) : '--:--';
+      const bib  = msg.bib || null;
+      const conf = msg.confidence != null ? Math.round(msg.confidence * 100) : 0;
+      const id = addLogEntry(rank, ts, null, bib, conf, false);
+      // If backend has an image URL, load it
+      if (msg.id) {
+        // Derive image URL from same origin as the WS URL
+        try {
+          const wsUrl = new URL(document.getElementById('ws-url').value.trim());
+          const httpProto = wsUrl.protocol === 'wss:' ? 'https:' : 'http:';
+          const imgUrl = `${httpProto}//${wsUrl.host}/races/${_wsRaceId(wsUrl)}/arrivals/${msg.id}/image`;
+          const img = new Image();
+          img.onload = () => updateLogThumb(id, imgUrl);
+          img.src = imgUrl;
+        } catch {}
+      }
+      triggerFlash();
+    } else if (msg.type === 'status') {
+      if (msg.state === 'error') wsSetStatus('pipeline error', 'var(--accent2)');
+    } else if (msg.type === 'error') {
+      wsSetStatus('error: ' + (msg.message || ''), 'var(--accent2)');
+    }
+  };
+}
+
+function _wsRaceId(wsUrl) {
+  // Extract race_id from path /races/{race_id}/ws/log
+  const m = wsUrl.pathname.match(/\/races\/([^/]+)\//);
+  return m ? m[1] : '';
+}
+
+document.getElementById('btn-ws-connect').addEventListener('click', () => {
+  if (_ws && _ws.readyState === WebSocket.OPEN) {
+    clearTimeout(_wsReconnectTimer);
+    _ws.close();
+    wsSetStatus('disconnected', 'var(--muted)');
+  } else {
+    wsConnect();
+  }
+});
+
 </script>
 </body>
 </html>

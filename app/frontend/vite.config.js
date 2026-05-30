@@ -21,7 +21,7 @@ export default defineConfig({
     port: 5173,
     open: true,
     proxy: {
-      '/races': 'http://localhost:8000',
+      '/races': { target: 'http://localhost:8000', ws: true },
       '/videos': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
     },
