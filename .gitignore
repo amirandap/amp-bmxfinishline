@@ -61,3 +61,5 @@ videos/
 # Logs / temp
 *.log
 tmp/
+node_modules/
+.DS_Store
