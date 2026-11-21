@@ -69,7 +69,35 @@ class Arrival(Base):
 
     merged_into: Optional[str] = Column(String(12), nullable=True)
 
+    # Second-opinion confidence score from per-bib gallery matcher (0–1, None = not computed)
+    gallery_confidence: Optional[float] = Column(Float, nullable=True)
+
     race = relationship("Race", back_populates="arrivals")
+
+
+# ── Bib feedback / gallery (training data for second-confidence score) ──
+
+class BibFeedback(Base):
+    """Stores confirmed bib-crop pairs for per-bib gallery matching.
+
+    Every time a bib is confirmed (AUTO_OK / MANUAL_OK) the backend saves the
+    OCR crop and a compact colour-histogram feature vector here.  Future OCR
+    runs can then compare against this gallery to produce a *gallery_confidence*
+    second-opinion score that improves with use.
+    """
+
+    __tablename__ = "bib_feedback"
+
+    id: str = Column(String(12), primary_key=True, default=_uuid)
+    race_id: str = Column(String(12), ForeignKey("races.id"), nullable=False)
+    arrival_id: Optional[str] = Column(String(12), nullable=True)
+    bib: str = Column(String(8), nullable=False, index=True)
+    crop_path: Optional[str] = Column(Text, nullable=True)
+    # Compact feature vector stored as a JSON list of floats (e.g. 256-bin histogram)
+    feature_vector = Column(JSON, nullable=True)
+    confirmed_at = Column(DateTime, default=datetime.datetime.utcnow)
+
+    race = relationship("Race")
 
 
 # ── Audit log ───────────────────────────────────────────────────────

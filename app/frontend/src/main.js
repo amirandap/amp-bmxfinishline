@@ -2,7 +2,9 @@ import './style.css';
 
 // ── State ─────────────────────────────────────────────────────────
 let currentRaceId = null;
-let statusPoller = null;
+let statusPoller = null;  // kept as fallback poll reference
+let liveSocket = null;    // WebSocket for live pipeline events
+let _pendingUploadFile = null;
 
 // ── API helper ────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -65,6 +67,7 @@ async function deleteRace() {
         await api('DELETE', `/races/${currentRaceId}`);
         currentRaceId = null;
         document.getElementById('detail-panel').style.display = 'none';
+        disconnectLiveSocket();
         stopPoller();
         await loadRaces();
         toast('Race deleted');
@@ -72,6 +75,7 @@ async function deleteRace() {
 }
 
 function selectRace(id, name) {
+    disconnectLiveSocket();  // drop socket for the previous race
     currentRaceId = id;
     document.getElementById('detail-race-name').textContent = name;
     document.getElementById('detail-panel').style.display = '';
@@ -81,7 +85,7 @@ function selectRace(id, name) {
     });
     loadCalibration();
     loadArrivals();
-    pollStatus();
+    connectLiveSocket(id);  // replace polling with WebSocket
     // Eagerly init the calibration canvas so the video starts loading in the
     // background even before the user opens the Calibration <details>.
     calibInitCanvas();
@@ -394,7 +398,8 @@ async function autoDetectCalibration() {
             video_path: CALIB_VIDEO_SRC.replace(/^\//, ''),
             frame_no: 0,
             orientation: 'horizontal',
-            angle_thresh_deg: 15.0,
+            angle_thresh_deg: 25.0,
+            expected_y_frac: [0.3, 0.95],
             save: true,
         });
         if (c.finish_line && c.finish_line.length === 2) {
@@ -485,7 +490,8 @@ async function startProcess() {
     try {
         await api('POST', `/races/${currentRaceId}/process/start`, { input_type, input });
         toast('Processing started');
-        startPoller();
+        // WS will push status updates; fall back to polling if socket is closed
+        if (!liveSocket || liveSocket.readyState !== WebSocket.OPEN) startPoller();
     } catch (e) { toast('Error: ' + e.message, true); }
 }
 
@@ -516,14 +522,90 @@ function startPoller() { stopPoller(); statusPoller = setInterval(updateStatus, 
 function stopPoller() { if (statusPoller) { clearInterval(statusPoller); statusPoller = null; } }
 function pollStatus() { updateStatus(); startPoller(); }
 
-// ── Upload ────────────────────────────────────────────────────────
-// TODO [CHORE]: Evaluate WebSocket (FastAPI native via `websockets`) or Redis
-//   Pub/Sub (with fastapi-socketio / sse-starlette) to replace the current
-//   1500 ms status polling and push real-time pipeline events + arrival
-//   notifications to the browser.  Consider Redis if horizontal scaling is
-//   needed later; native WebSocket is sufficient for a single-server deployment.
+// ── WebSocket live log ────────────────────────────────────────────
+// Replaces the 1500 ms HTTP poll with a persistent WebSocket that receives
+// 'status' heartbeats (every 30 s) and immediate 'arrival' push events.
 
-let _pendingUploadFile = null;
+function connectLiveSocket(raceId) {
+    disconnectLiveSocket();
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const url = `${proto}//${location.host}/races/${raceId}/ws/log`;
+    const ws = new WebSocket(url);
+    liveSocket = ws;
+
+    ws.addEventListener('open', () => {
+        console.debug('[WS] connected', url);
+        stopPoller();  // WS is up – no need for HTTP polling
+    });
+
+    ws.addEventListener('message', e => {
+        let msg;
+        try { msg = JSON.parse(e.data); } catch { return; }
+
+        if (msg.type === 'status') {
+            document.getElementById('process-status').textContent = msg.state ?? 'idle';
+            document.getElementById('frames-processed').textContent = msg.frames_processed ?? 0;
+            document.getElementById('arrivals-detected').textContent = msg.arrivals_detected ?? 0;
+            if (msg.camera_moved) document.getElementById('camera-warn').style.display = '';
+            if (msg.state === 'finished') { toast('✅ Processing complete'); loadArrivals(); }
+            if (msg.state === 'error') toast('⚠ Pipeline error: ' + (msg.error || 'unknown'), true);
+        }
+
+        if (msg.type === 'arrival') {
+            // Append a live row immediately (full refresh happens on 'finished')
+            prependArrivalRow(msg);
+            const cnt = document.getElementById('arrivals-detected');
+            cnt.textContent = parseInt(cnt.textContent || '0', 10) + 1;
+        }
+
+        if (msg.type === 'error') {
+            toast('⚠ Pipeline error: ' + (msg.message || 'unknown'), true);
+        }
+    });
+
+    ws.addEventListener('close', () => {
+        console.debug('[WS] closed');
+        // Fall back to HTTP poll so the status stays up to date
+        if (currentRaceId === raceId) startPoller();
+    });
+
+    ws.addEventListener('error', () => {
+        console.warn('[WS] error – falling back to HTTP poll');
+        if (currentRaceId === raceId) startPoller();
+    });
+
+    // Keep-alive ping every 25 s (server timeout is 30 s)
+    const ping = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) ws.send('ping');
+        else clearInterval(ping);
+    }, 25_000);
+}
+
+function disconnectLiveSocket() {
+    if (liveSocket) {
+        liveSocket.onclose = null;  // suppress fallback-poll trigger on manual close
+        liveSocket.close();
+        liveSocket = null;
+    }
+    stopPoller();
+}
+
+function prependArrivalRow(a) {
+    const tbody = document.querySelector('#arrivals-table tbody');
+    if (!tbody) return;
+    document.getElementById('thumb-empty-msg')?.remove();
+    const pos = a.position ?? '–';
+    const bib = escHtml(a.bib ?? '?');
+    const ms  = typeof a.timestamp_ms === 'number' ? a.timestamp_ms.toFixed(1) : '–';
+    const conf = typeof a.confidence  === 'number' ? (a.confidence * 100).toFixed(0) + '%' : '–';
+    const status = escHtml(a.status ?? 'NEEDS_REVIEW');
+    const tr = document.createElement('tr');
+    tr.dataset.arrivalId = a.id;
+    tr.innerHTML = `<td>${pos}</td><td class="bib-cell">${bib}</td><td>${ms}</td>` +
+        `<td>${conf}</td><td>${status}</td><td>–</td>` +
+        `<td><button onclick="openBibEdit('${a.id}','${escHtml(a.bib??'')}')">Edit</button></td>`;
+    tbody.prepend(tr);
+}
 
 function onVideoFileChange(e) {
     const file = e.target.files[0];

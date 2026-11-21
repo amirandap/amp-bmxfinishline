@@ -69,6 +69,9 @@ class OcrConfig(BaseModel):
     confidence_threshold: float = 0.55
     zoom_scale: float = 2.0
     max_digits: int = 3
+    # Additional scales to try for each crop – empty means only zoom_scale.
+    # e.g. [0.5, 1.0, 1.5, 2.0] tries the crop at four scales, then fuses results.
+    extra_scales: list[float] = Field(default_factory=lambda: [0.5, 1.0, 1.5])
 
 
 class CameraConfig(BaseModel):
